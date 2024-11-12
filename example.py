@@ -13,12 +13,18 @@ class RV(NamedTuple):
     mean: jax.Array
     cov: jax.Array
 
+class Trafo(NamedTuple):
+    para: jax.Array
+    perp: jax.Array
 
-def main(N=10, D=5, d=2):
+
+def main(N=4, D=3, d=2):
+    jax.config.update("jax_enable_x64", True)
+    jnp.set_printoptions(3)
     key = jax.random.PRNGKey(1)
 
-    Phi = jax.random.normal(key, shape=(D, D))
-    Sigma = Phi @ Phi.T
+    Phi = jax.random.normal(key, shape=(D, D)) / jnp.sqrt(D)
+    Sigma = Phi @ Phi.T + jnp.eye(D)
     prior = Transition(Phi, Sigma)
 
     A = jax.random.normal(key, shape=(d, D))
@@ -29,11 +35,41 @@ def main(N=10, D=5, d=2):
     chol = jax.random.normal(key, shape=(D, D))
     cov = chol @ chol.T
     init = RV(mean, cov)
+    init = condition(init, constraint, data=0.)
+    init_ref = init
+
+    
+
 
     data = jnp.zeros((N, d))
     step = functools.partial(filter_step, prior, constraint)
     _, solution = jax.lax.scan(step, init=init, xs=data)
-    print(jax.tree.map(jnp.shape, solution))
+
+    
+    for s in solution.mean:
+        eps = jnp.sqrt(jnp.finfo(jnp.dtype(s)).eps)
+        assert jnp.allclose(constraint.linop @ s, 0., rtol=eps, atol=eps)
+
+
+    init, Q = reduce_rv(init, constraint.linop)
+    
+    assert jnp.allclose(Q.perp @ init.mean, init_ref.mean)
+    assert jnp.allclose(Q.perp @ init.cov @ Q.perp.T, init_ref.cov)
+
+
+
+    prior, constraint, Q = reduce_ssm(prior, constraint)
+    init = condition(init, constraint, data=0.)
+        
+
+
+    data = jnp.zeros((N, d))
+    step = functools.partial(filter_step, prior, constraint)
+    _, solution = jax.lax.scan(step, init=init, xs=data)
+    
+    for s in solution.mean:
+        pass
+
 
 
 def filter_step(prior: Transition, constraint: Transition, rv: RV, data):
@@ -47,85 +83,56 @@ def filter_step(prior: Transition, constraint: Transition, rv: RV, data):
 
     m = m - K @ (constraint.linop @ m - data)
     C = C - K @ S @ K.T
-    return RV(m, C), m
+    return RV(m, C), RV(m, C)
+
+def condition(rv, constraint, data):
+    S = constraint.linop @ rv.cov @ constraint.linop.T + constraint.cov
+    K = rv.cov @ constraint.linop.T @ jnp.linalg.inv(S)
+    m = rv.mean - K @ (constraint.linop @ rv.mean - data)
+    C = rv.cov - K @ S @ K.T
+    return RV(m, C)
+
+def reduce_rv(rv: RV, linop: jax.Array):
+    D, d = jnp.shape(linop.T)
+
+    U, S = jnp.linalg.qr(linop.T, mode="complete")
 
 
-def __():
-    assert False
-
-    As = jax.random.normal(key, shape=(N, n, n))
-    Qs = jax.random.normal(key, shape=(N, n, n))
-    Qs = jax.vmap(lambda v: jnp.dot(v, v.T))(Qs)
-
-    D = jax.random.normal(key, shape=(d, n))
-    Ds = jnp.stack([D] * N)
-
-    Rs = jnp.zeros((N, d, d))
-    m0 = jax.random.normal(key, shape=(n,))
-    C0 = jax.random.normal(key, shape=(n, n))
-
-    init = (m0, C0)
-    xs = (As, Qs, Ds, Rs)
-
-    terminal, intermediate = jax.lax.scan(step, xs=xs, init=init)
-    print(terminal[0])
-    print(Ds[-1] @ terminal[0])
-
-    # todo: assert constraint is satisfied
-
-    # print(intermediate[1])
-
-    init = init_reduce(*init, Ds[0])
-    xs, (Q_para, Q_perp) = ssm_reduce(xs)
-
-    terminal, intermediate = jax.lax.scan(step, xs=xs, init=init)
-
-    # todo: assert it matches filter result from above
-
-    print(Q_para.shape)
-    print(Q_perp.shape)
-    # print(terminal[0].shape)
-    print(Q_perp[-1] @ terminal[0])
+    U_para = U[:, : d]
+    U_perp = U[:, d :]
 
 
-def init_reduce(m, C, D):
-    _, S = jnp.linalg.qr(D.T)
-    U, _ = jnp.linalg.qr(D.T, mode="complete")
-
-    U_para = U[:, : len(S)]
-    U_perp = U[:, len(S) :]
-
+    m, C = rv
     m0_new = U_perp.T @ m
     C0_new = U_perp.T @ C @ U_perp
-    return m0_new, C0_new
+
+    return RV(m0_new, C0_new), Trafo(perp=U_perp, para=U_para)
 
 
-@jax.vmap
-def ssm_reduce(inputs):
-    # m, C = rv
-    A, Q, D, _R = inputs
+def reduce_ssm(prior: Transition, constraint: Transition):
+    D, d = jnp.shape(constraint.linop.T)
 
-    n, p = D.shape
+    _, S = jnp.linalg.qr(constraint.linop.T)
+    U, _ = jnp.linalg.qr(constraint.linop.T, mode="complete")
 
-    _, S = jnp.linalg.qr(D.T)
-    U, _ = jnp.linalg.qr(D.T, mode="complete")
-
-    U_para = U[:, : len(S)]
-    U_perp = U[:, len(S) :]
+    U_para = U[:, : d]
+    U_perp = U[:, d :]
 
     E_para = U_para.T @ U
     E_perp = U_perp.T @ U
 
-    V, R = jnp.linalg.qr(jnp.linalg.inv(jnp.linalg.cholesky(Q).T) @ U)
-    ndim = R.shape[0]
-    nobs = S.shape[0]
+
+    chol = jnp.linalg.inv(jnp.linalg.cholesky(prior.cov))
+    V, R = jnp.linalg.qr(chol.T @ U)
+
     R_perp = E_perp @ R @ E_perp.T
     R_para = E_para @ R @ E_para.T
     R_star = E_perp @ R @ E_para.T
+
     K = jnp.linalg.inv(R_perp) @ R_star
 
-    Phi_perp = E_perp @ A @ U_perp
-    Phi_para = E_para @ A @ U_perp
+    Phi_perp = E_perp @ prior.linop @ U_perp
+    Phi_para = E_para @ prior.linop @ U_perp
 
     A_new = Phi_perp + K @ Phi_para
     D_new = Phi_para
@@ -133,24 +140,11 @@ def ssm_reduce(inputs):
     R_prior = jnp.linalg.inv(R_perp.T @ R_perp)
     R_obs = jnp.linalg.inv(R_para.T @ R_para)
 
-    return (A_new, R_prior, D_new, R_obs), (U_para, U_perp)
+    prior = Transition(Phi_perp, R_prior)
+    constraint = Transition(S @ Phi_para, R_obs)
+    return prior, constraint, U_perp
 
 
-def step(rv, inputs):
-    A, Q, D, R = inputs
-    m, C = rv
-
-    print(A.shape, Q.shape, D.shape, C.shape)
-    mp = A @ m
-    Cp = A @ C @ A.T + Q
-
-    S = D @ Cp @ D.T + R
-    K = Cp @ D.T @ jnp.linalg.inv(S)
-
-    m = mp - K @ D @ mp
-
-    C = Cp - K @ S @ K.T
-    return (m, C), (m, C)
 
 
 if __name__ == "__main__":
