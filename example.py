@@ -13,18 +13,21 @@ class RV(NamedTuple):
     mean: jax.Array
     cov: jax.Array
 
+
 class Trafo(NamedTuple):
     para: jax.Array
     perp: jax.Array
 
 
-def main(N=4, D=3, d=2):
+def main(N=10, D=3, d=2):
     jax.config.update("jax_enable_x64", True)
-    jnp.set_printoptions(3)
+    jnp.set_printoptions(5)
     key = jax.random.PRNGKey(1)
 
     Phi = jax.random.normal(key, shape=(D, D)) / jnp.sqrt(D)
-    Sigma = Phi @ Phi.T + jnp.eye(D)
+    Sigma = Phi @ Phi.T + 1e5*jnp.eye(D)
+    Phi = jnp.eye(D)
+    # Sigma = jnp.eye(D)
     prior = Transition(Phi, Sigma)
 
     A = jax.random.normal(key, shape=(d, D))
@@ -35,41 +38,39 @@ def main(N=4, D=3, d=2):
     chol = jax.random.normal(key, shape=(D, D))
     cov = chol @ chol.T
     init = RV(mean, cov)
-    init = condition(init, constraint, data=0.)
+    init = condition(init, constraint, data=0.0)
     init_ref = init
-
-    
-
 
     data = jnp.zeros((N, d))
     step = functools.partial(filter_step, prior, constraint)
     _, solution = jax.lax.scan(step, init=init, xs=data)
+    solution_ref = solution
 
-    
     for s in solution.mean:
         eps = jnp.sqrt(jnp.finfo(jnp.dtype(s)).eps)
-        assert jnp.allclose(constraint.linop @ s, 0., rtol=eps, atol=eps)
-
+        assert jnp.allclose(constraint.linop @ s, 0.0, rtol=eps, atol=eps)
 
     init, Q = reduce_rv(init, constraint.linop)
-    
+
     assert jnp.allclose(Q.perp @ init.mean, init_ref.mean)
     assert jnp.allclose(Q.perp @ init.cov @ Q.perp.T, init_ref.cov)
 
-
-
-    prior, constraint, Q = reduce_ssm(prior, constraint)
-    init = condition(init, constraint, data=0.)
-        
-
+    prior, constraint, _ = reduce_ssm(prior, constraint)
 
     data = jnp.zeros((N, d))
     step = functools.partial(filter_step, prior, constraint)
     _, solution = jax.lax.scan(step, init=init, xs=data)
-    
-    for s in solution.mean:
-        pass
 
+    for m, c, m_ref, c_ref in zip(*solution, *solution_ref):
+        print(Q.perp @ m)
+        print(m_ref)
+        print()
+        print(Q.perp @ c @ Q.perp.T)
+        print(c_ref)
+        print()
+        print()
+        assert jnp.allclose(Q.perp @ m, m_ref)
+        assert jnp.allclose(Q.perp @ c @ Q.perp.T, c_ref)
 
 
 def filter_step(prior: Transition, constraint: Transition, rv: RV, data):
@@ -85,6 +86,7 @@ def filter_step(prior: Transition, constraint: Transition, rv: RV, data):
     C = C - K @ S @ K.T
     return RV(m, C), RV(m, C)
 
+
 def condition(rv, constraint, data):
     S = constraint.linop @ rv.cov @ constraint.linop.T + constraint.cov
     K = rv.cov @ constraint.linop.T @ jnp.linalg.inv(S)
@@ -92,15 +94,14 @@ def condition(rv, constraint, data):
     C = rv.cov - K @ S @ K.T
     return RV(m, C)
 
+
 def reduce_rv(rv: RV, linop: jax.Array):
     D, d = jnp.shape(linop.T)
 
     U, S = jnp.linalg.qr(linop.T, mode="complete")
 
-
-    U_para = U[:, : d]
-    U_perp = U[:, d :]
-
+    U_para = U[:, :d]
+    U_perp = U[:, d:]
 
     m, C = rv
     m0_new = U_perp.T @ m
@@ -115,12 +116,11 @@ def reduce_ssm(prior: Transition, constraint: Transition):
     _, S = jnp.linalg.qr(constraint.linop.T)
     U, _ = jnp.linalg.qr(constraint.linop.T, mode="complete")
 
-    U_para = U[:, : d]
-    U_perp = U[:, d :]
+    U_para = U[:, :d]
+    U_perp = U[:, d:]
 
     E_para = U_para.T @ U
     E_perp = U_perp.T @ U
-
 
     chol = jnp.linalg.inv(jnp.linalg.cholesky(prior.cov))
     V, R = jnp.linalg.qr(chol.T @ U)
@@ -131,8 +131,8 @@ def reduce_ssm(prior: Transition, constraint: Transition):
 
     K = jnp.linalg.inv(R_perp) @ R_star
 
-    Phi_perp = E_perp @ prior.linop @ U_perp
-    Phi_para = E_para @ prior.linop @ U_perp
+    Phi_perp = U_perp.T @ prior.linop @ U_perp
+    Phi_para = U_para.T @ prior.linop @ U_perp
 
     A_new = Phi_perp + K @ Phi_para
     D_new = Phi_para
@@ -141,10 +141,8 @@ def reduce_ssm(prior: Transition, constraint: Transition):
     R_obs = jnp.linalg.inv(R_para.T @ R_para)
 
     prior = Transition(Phi_perp, R_prior)
-    constraint = Transition(S @ Phi_para, R_obs)
+    constraint = Transition(Phi_para, R_obs)
     return prior, constraint, U_perp
-
-
 
 
 if __name__ == "__main__":
