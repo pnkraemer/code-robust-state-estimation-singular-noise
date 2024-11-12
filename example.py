@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import functools
 
 
-def main(N=10, n=3, d=2):
+def main(N=10, n=5, d=2):
     key = jax.random.PRNGKey(1)
 
     As = jax.random.normal(key, shape=(N, n, n))
@@ -20,14 +20,18 @@ def main(N=10, n=3, d=2):
     xs = (As, Qs, Ds, Rs)
 
     terminal, intermediate = jax.lax.scan(step, xs=xs, init=init)
-
-    print(intermediate[1])
+    print(terminal[0])
+    # print(intermediate[1])
 
     init = init_reduce(*init, Ds[0])
-    xs = ssm_reduce(xs)
+    xs, (Q_para, Q_perp) = ssm_reduce(xs)
 
     terminal, intermediate = jax.lax.scan(step, xs=xs, init=init)
-    print(intermediate[1])
+
+    print(Q_para.shape)
+    print(Q_perp.shape)
+    # print(terminal[0].shape)
+    print(Q_perp[-1] @ terminal[0])
 
 
 def init_reduce(m, C, D):
@@ -71,7 +75,7 @@ def ssm_reduce(inputs):
     R_prior = jnp.linalg.inv(R_perp.T @ R_perp)
     R_obs = jnp.linalg.inv(R_para.T @ R_para)
 
-    return (A_new, R_prior, D_new, R_obs)
+    return (A_new, R_prior, D_new, R_obs), (U_para, U_perp)
 
 
 def step(rv, inputs):
