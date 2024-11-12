@@ -1,18 +1,64 @@
 import jax
 import jax.numpy as jnp
 import functools
+from typing import NamedTuple
 
 
-def main(N=10, n=5, d=2):
+class Transition(NamedTuple):
+    linop: jax.Array
+    cov: jax.Array
+
+
+class RV(NamedTuple):
+    mean: jax.Array
+    cov: jax.Array
+
+
+def main(N=10, D=5, d=2):
     key = jax.random.PRNGKey(1)
+
+    Phi = jax.random.normal(key, shape=(D, D))
+    Sigma = Phi @ Phi.T
+    prior = Transition(Phi, Sigma)
+
+    A = jax.random.normal(key, shape=(d, D))
+    R = jnp.zeros((d, d))
+    constraint = Transition(A, R)
+
+    mean = jax.random.normal(key, shape=(D,))
+    chol = jax.random.normal(key, shape=(D, D))
+    cov = chol @ chol.T
+    init = RV(mean, cov)
+
+    data = jnp.zeros((N, d))
+    step = functools.partial(filter_step, prior, constraint)
+    _, solution = jax.lax.scan(step, init=init, xs=data)
+    print(jax.tree.map(jnp.shape, solution))
+
+
+def filter_step(prior: Transition, constraint: Transition, rv: RV, data):
+    m, C = rv
+
+    m = prior.linop @ m
+    C = prior.linop @ C @ prior.linop.T + prior.cov
+
+    S = constraint.linop @ C @ constraint.linop.T + constraint.cov
+    K = C @ constraint.linop.T @ jnp.linalg.inv(S)
+
+    m = m - K @ (constraint.linop @ m - data)
+    C = C - K @ S @ K.T
+    return RV(m, C), m
+
+
+def __():
+    assert False
 
     As = jax.random.normal(key, shape=(N, n, n))
     Qs = jax.random.normal(key, shape=(N, n, n))
     Qs = jax.vmap(lambda v: jnp.dot(v, v.T))(Qs)
 
-
     D = jax.random.normal(key, shape=(d, n))
-    Ds = jnp.stack([D]*N)
+    Ds = jnp.stack([D] * N)
 
     Rs = jnp.zeros((N, d, d))
     m0 = jax.random.normal(key, shape=(n,))
@@ -26,7 +72,6 @@ def main(N=10, n=5, d=2):
     print(Ds[-1] @ terminal[0])
 
     # todo: assert constraint is satisfied
-
 
     # print(intermediate[1])
 
@@ -69,8 +114,7 @@ def ssm_reduce(inputs):
     U_perp = U[:, len(S) :]
 
     E_para = U_para.T @ U
-    E_perp = U_perp.T @ U 
-
+    E_perp = U_perp.T @ U
 
     V, R = jnp.linalg.qr(jnp.linalg.inv(jnp.linalg.cholesky(Q).T) @ U)
     ndim = R.shape[0]
@@ -80,9 +124,8 @@ def ssm_reduce(inputs):
     R_star = E_perp @ R @ E_para.T
     K = jnp.linalg.inv(R_perp) @ R_star
 
-
-    Phi_perp = E_perp @ A @E_perp.T
-    Phi_para = E_para @ A @ E_perp.T
+    Phi_perp = E_perp @ A @ U_perp
+    Phi_para = E_para @ A @ U_perp
 
     A_new = Phi_perp + K @ Phi_para
     D_new = Phi_para
@@ -104,7 +147,7 @@ def step(rv, inputs):
     S = D @ Cp @ D.T + R
     K = Cp @ D.T @ jnp.linalg.inv(S)
 
-    m = mp + K @ D @ mp
+    m = mp - K @ D @ mp
 
     C = Cp - K @ S @ K.T
     return (m, C), (m, C)
