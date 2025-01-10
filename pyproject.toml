@@ -5,11 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 dynamic = ["version"]
 name = "ckf"
-dependencies = [
-    "jax[cpu]",
-    "pytest",
-    "pytest_cases"
-]
+dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["."]
