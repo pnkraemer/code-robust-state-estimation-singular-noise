@@ -8,5 +8,5 @@ name = "ckf"
 dependencies = []
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src/"]
 include = ["ckf"]
