@@ -1,53 +1,42 @@
 import jax.numpy as jnp
 import jax
+import dataclasses
 
-def kalman_filter():
-    def kf(data, /, *, init, latent, observe):
-        n, _ = data.shape
-        d, = init[0].shape
-        ms = jnp.zeros((n, d))
-        cs = jnp.zeros((n, d, d))
+from typing import  Callable
 
-        rv = init
-        body = body_fun(latent, observe)
-        _, (ms, cs) = jax.lax.scan(body, xs=data, init=init, reverse=False)
-        return ms, cs
+@dataclasses.dataclass
+class RandVar:
+    mean: jax.Array
+    cov: jax.Array
 
-    def body_fun(latent, observe):
-        def fun(rv, datum):
-            rv = predict(rv, latent)
-            rv = update(rv, datum, observe)
-            return rv, rv
-        return fun
-
-        # for i, d in enumerate(data):
-        #     rv = predict(rv, latent)
-        #     rv = update(rv, d, observe)
-        #
-        #     ms = ms.at[i].set(rv[0])
-        #     cs = cs.at[i].set(rv[1])
-        # return (ms, cs)
-
-    return kf
+@dataclasses.dataclass
+class Trafo:
+    linop: jax.Array
+    bias: jax.Array
+    cov: jax.Array
 
 
 
-def predict(rv, model):
-    A, Q = model
-    m, C = rv
+def condition_one_step() -> Callable:
+    def cond(*, z: RandVar, z_to_x: Trafo, x_to_y: Trafo) -> RandVar:
+        x = predict(z, z_to_x)
+        x_given_y = update(x, x_to_y)
+        return x_given_y
 
-    m = A @ m
-    C = A @ C @ A.T + Q
-    return m, C
+    def predict(rv: RandVar, model: Trafo) -> RandVar:
+        m = model.linop @ rv.mean + model.bias
+        C = model.linop @ rv.cov @ model.linop.T + model.cov
+        return RandVar(m, C)
 
-def update(rv, data, model):
-    A, Q = model
-    m, C = rv
+    def update(rv: RandVar, model: Trafo) -> RandVar:
+        print(model.linop.shape, rv.mean.shape, model.bias.shape)
+        z = model.linop @ rv.mean + model.bias
+        S = model.linop @ rv.cov @ model.linop.T + model.cov
+        K = rv.cov @ model.linop.T @ jnp.linalg.inv(S)
 
-    z = A @ m
-    S = A @ C @ A.T + Q
-    K = C @ A.T @ jnp.linalg.inv(S)
+        m = rv.mean - K @ z
+        C = rv.cov - K @ model.linop @ rv.cov
+        return RandVar(m, C)
 
-    m = m - K @ (z - data)
-    C = C - K @ A @ C
-    return (m, C)
+    return cond
+
