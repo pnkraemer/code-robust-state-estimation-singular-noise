@@ -3,7 +3,8 @@ import jax.numpy as jnp
 
 def kalman_filter():
     def kf(data, /, *, init, latent, observe):
-        n, d = data.shape
+        n, _ = data.shape
+        d, = init[0].shape
         ms = jnp.zeros((n, d))
         cs = jnp.zeros((n, d, d))
 
