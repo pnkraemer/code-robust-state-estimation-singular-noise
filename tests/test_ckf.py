@@ -1,7 +1,7 @@
 """Tests for constrained Kalman filtering."""
 
 import jax.numpy as jnp
-from ckf import kf
+from ckf import ckf
 
 
 def test_kf_works():
@@ -19,7 +19,7 @@ def test_kf_works():
 
     value = 716151.214
     data = value * jnp.ones((10, 1), dtype=float)
-    kalman = kf.kalman_filter()
+    kalman = ckf.kalman_filter()
     (m_all, c_all) = kalman(data, init=init, observe=observe, latent=latent)
     assert m_all.shape == (10, 2)
     assert c_all.shape == (10, 2, 2)

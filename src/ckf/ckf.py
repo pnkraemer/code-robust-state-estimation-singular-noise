@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-
+import jax
 
 def kalman_filter():
     def kf(data, /, *, init, latent, observe):
@@ -9,13 +9,24 @@ def kalman_filter():
         cs = jnp.zeros((n, d, d))
 
         rv = init
-        for i, d in enumerate(data):
-            rv = predict(rv, latent)
-            rv = update(rv, d, observe)
+        body = body_fun(latent, observe)
+        _, (ms, cs) = jax.lax.scan(body, xs=data, init=init, reverse=False)
+        return ms, cs
 
-            ms = ms.at[i].set(rv[0])
-            cs = cs.at[i].set(rv[1])
-        return (ms, cs)
+    def body_fun(latent, observe):
+        def fun(rv, datum):
+            rv = predict(rv, latent)
+            rv = update(rv, datum, observe)
+            return rv, rv
+        return fun
+
+        # for i, d in enumerate(data):
+        #     rv = predict(rv, latent)
+        #     rv = update(rv, d, observe)
+        #
+        #     ms = ms.at[i].set(rv[0])
+        #     cs = cs.at[i].set(rv[1])
+        # return (ms, cs)
 
     return kf
 
