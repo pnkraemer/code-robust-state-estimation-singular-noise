@@ -85,7 +85,7 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
     # Parametrise x2_mid_x1
     Q = x_mid_z.cov
     C = y_mid_x.linop
-    x1_mid_z_raw = W1.T @ x_mid_z
+    x1_mid_z_raw = W1.T @ x_mid_z  # "raw" meaning without considering independence etc.
     x2_mid_z_raw = W2.T @ x_mid_z
     G = W2.T @ Q @ W1 @ jnp.linalg.inv(x1_mid_z_raw.cov)
     Z = x2_mid_z_raw.cov - G @ x1_mid_z_raw.cov @ G.T
