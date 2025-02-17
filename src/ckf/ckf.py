@@ -4,13 +4,14 @@ import dataclasses
 
 from typing import Callable
 
-
+@jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class RandVar:
     mean: jax.Array
     cov: jax.Array
 
 
+@jax.tree_util.register_dataclass
 @dataclasses.dataclass
 class Trafo:
     linop: jax.Array
@@ -94,9 +95,9 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
         bias=S1 @ W1.T @ x_mid_z.bias,
         cov=S1 @ W1.T @ x_mid_z.cov @ W1 @ S1.T,
     )
-    z_mid_y2, y2 = condition(prior=z, trafo=y2_mid_z)
+    y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
 
-    return z_mid_y2, x2_mid_z, y1_mid_x2
+    return z_mid_y2, x2_mid_z, y1_mid_x2, x1_value
     # assert False
     # # Collect terms:
     #
