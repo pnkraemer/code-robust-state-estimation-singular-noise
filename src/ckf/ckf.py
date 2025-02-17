@@ -26,7 +26,9 @@ class Trafo:
     def cov_to_low_rank(self):
         eigh = jnp.linalg.eigh(self.cov)
         cholesky = eigh.eigenvectors @ jnp.sqrt(jnp.diag(eigh.eigenvalues))
-        return cholesky[:, eigh.eigenvalues > 0.0]
+
+        small = jnp.finfo(cholesky.dtype).eps
+        return cholesky[:, eigh.eigenvalues > small]
 
     def __rmatmul__(self, other: jax.Array):
         return Trafo(
@@ -58,6 +60,7 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     # First QR iteration
     F = y_mid_x.cov_to_low_rank()
     _, ndim = F.shape
+    print(F.shape)
     V, R = jnp.linalg.qr(F, mode="complete")
     V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
     R1, zeros = jnp.split(R, indices_or_sections=[ndim], axis=0)
