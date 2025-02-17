@@ -32,21 +32,30 @@ def test_kalman_filter():
     means, covs = [], []
 
 
-
+    # todo: make square-root
+    # todo: reuse reduced model between steps (all computation except data)
+    # todo: track marginal likelihoods
+    x_mid_z_general = x_mid_z
     for d in data_out:
         d = jnp.atleast_1d(d)
         out = ckf.model_reduce(d, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
         z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
+
 
         # Condition:
         x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
         _y1, backward = ckf.condition(prior=x2, trafo=y1_mid_x2_small)
         x2_mid_y1 = ckf.evaluate_conditional(y1, trafo=backward)
 
+        # x2_mid_y1 is the new "z", and the new "x_mid_z" involves
+        # the reconstruction of the original state
+        z = x2_mid_y1
+        x_mid_z = ckf.combine(outer=x_mid_z_general, inner=x_from_x2)
 
-        z = ckf.marginal(prior=x2_mid_y1, trafo=x_from_x2)
 
-        reconstructed = ckf.evaluate_conditional(x2_mid_y1.mean, trafo=x_from_x2)
+        # Reconstruct then save
+        reconstructed = ckf.marginal(prior=x2_mid_y1, trafo=x_from_x2)
+
         means.append(reconstructed.mean)
         covs.append(reconstructed.cov)
 
@@ -55,7 +64,6 @@ def test_kalman_filter():
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0., atol=1e-5)
     assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0., atol=1e-5)
 
-    assert False
 
 
 

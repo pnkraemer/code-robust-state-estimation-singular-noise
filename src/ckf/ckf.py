@@ -60,6 +60,11 @@ def condition(*, prior: RandVar, trafo: Trafo):
 def evaluate_conditional(data, *, trafo: Trafo) -> RandVar:
     return RandVar(mean=trafo.linop @ data + trafo.bias, cov=trafo.cov)
 
+def combine(*, outer: Trafo, inner: Trafo) -> Trafo:
+    linop = outer.linop @ inner.linop
+    bias = outer.linop @ inner.bias + outer.bias
+    cov = outer.linop @ inner.cov @ outer.linop.T + outer.cov
+    return Trafo(linop, bias, cov)
 
 def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     # First QR iteration
