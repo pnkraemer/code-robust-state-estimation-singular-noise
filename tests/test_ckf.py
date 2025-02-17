@@ -31,26 +31,20 @@ def test_kalman_filter():
     means, covs = [], []
 
     # todo: make square-root
-    # todo: reuse reduced model between steps (all computation except data)
     # todo: track marginal likelihoods
     x_mid_z_general = x_mid_z
     for d in data_out:
         d = jnp.atleast_1d(d)
-        out = ckf.model_reduce(d, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-        z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
+        reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
+        x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(d, reduced=reduced)
 
-        # Condition:
-        x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
-        _y1, backward = ckf.condition(prior=x2, trafo=y1_mid_x2_small)
-        x2_mid_y1 = ckf.evaluate_conditional(y1, trafo=backward)
-
-        # x2_mid_y1 is the new "z", and the new "x_mid_z" involves
+        # x2_mid_data is the new "z", and the new "x_mid_z" involves
         # the reconstruction of the original state
-        z = x2_mid_y1
-        x_mid_z = ckf.combine(outer=x_mid_z_general, inner=x_from_x2)
+        z = x2_mid_data
+        x_mid_z = ckf.combine(outer=x_mid_z_general, inner=x_mid_x2)
 
-        # Reconstruct then save
-        reconstructed = ckf.marginal(prior=x2_mid_y1, trafo=x_from_x2)
+        # Reconstruct (for plotting reasons) then save
+        reconstructed = ckf.marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
         means.append(reconstructed.mean)
         covs.append(reconstructed.cov)
@@ -76,22 +70,15 @@ def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
 
 def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
     y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
-    out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-    z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
-
-    # Assert shapes
-    assert z_small.mean.shape == (z_dim,)
-    assert z_small.cov.shape == (z_dim, z_dim)
+    # out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
+    # z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
+    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
+    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, reduced=reduced)
 
     x2_dim = x_dim - y_dim[0]
-    assert x2_mid_z_small.linop.shape == (x2_dim, z_dim)
-    assert x2_mid_z_small.bias.shape == (x2_dim,)
-    assert x2_mid_z_small.cov.shape == (x2_dim, x2_dim)
+    assert x2_mid_data.mean.shape == (x2_dim,)
+    assert x2_mid_data.cov.shape == (x2_dim, x2_dim)
 
-    y1_dim = y_dim[1]
-    assert y1_mid_x2_small.linop.shape == (y1_dim, x2_dim)
-    assert y1_mid_x2_small.bias.shape == (y1_dim,)
-    assert y1_mid_x2_small.cov.shape == (y1_dim, y1_dim)
 
 
 def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
@@ -104,10 +91,10 @@ def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
 
     # Reduced model:
     reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-    x2_mid_y1, x_mid_x2 = ckf.model_reduced_apply(y, reduced=reduced)
+    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, reduced=reduced)
 
-    x_mid_y_mean = ckf.evaluate_conditional(x2_mid_y1.mean, trafo=x_mid_x2).mean
-    assert jnp.allclose(x_mid_y_mean, ref_x_mid_y.mean)
+    x_mid_data = ckf.marginal(prior=x2_mid_data, trafo=x_mid_x2)
+    assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean)
 
 
 def _model_interpolation():
