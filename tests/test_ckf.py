@@ -48,7 +48,9 @@ def test_kalman_filter():
 
 
 def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
-    data, (z, x_mid_z, y_mid_x), _ = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+    data, (z, x_mid_z, y_mid_x), _ = _model_random(
+        dim_z=z_dim, dim_x=x_dim, dim_y=y_dim
+    )
 
     x = ckf.marginal(prior=z, trafo=x_mid_z)
     _y, backward = ckf.condition(prior=x, trafo=y_mid_x)
