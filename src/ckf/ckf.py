@@ -71,6 +71,7 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     R1, zeros = jnp.split(R, indices_or_sections=[ndim], axis=0)
 
     # Split measurement model and data
+
     y1_mid_x = V1.T @ y_mid_x
     y2_mid_x = V2.T @ y_mid_x
     y1, y2 = V1.T @ y, V2.T @ y

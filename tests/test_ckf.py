@@ -24,10 +24,38 @@ def test_kalman_filter():
         means.append(x.mean)
         covs.append(x.cov)
 
-    
+
     assert jnp.allclose(jnp.stack(means)[:,  0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0., atol=1e-5)
     assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0., atol=1e-5)
+
+    means, covs = [], []
+
+
+
+    for d in data_out:
+        d = jnp.atleast_1d(d)
+        out = ckf.model_reduce(d, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
+        z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
+
+        # Condition:
+        x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
+        _y1, backward = ckf.condition(prior=x2, trafo=y1_mid_x2_small)
+        x2_mid_y1 = ckf.evaluate_conditional(y1, trafo=backward)
+
+
+        z = ckf.marginal(prior=x2_mid_y1, trafo=x_from_x2)
+
+        reconstructed = ckf.evaluate_conditional(x2_mid_y1.mean, trafo=x_from_x2)
+        means.append(reconstructed.mean)
+        covs.append(reconstructed.cov)
+
+
+    assert jnp.allclose(jnp.stack(means)[:,  0], data_out)
+    assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0., atol=1e-5)
+    assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0., atol=1e-5)
+
+    assert False
 
 
 
