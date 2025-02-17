@@ -24,13 +24,11 @@ def test_kalman_filter():
         means.append(x.mean)
         covs.append(x.cov)
 
-
-    assert jnp.allclose(jnp.stack(means)[:,  0], data_out)
-    assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0., atol=1e-5)
-    assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0., atol=1e-5)
+    assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
+    assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
+    assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0.0, atol=1e-5)
 
     means, covs = [], []
-
 
     # todo: make square-root
     # todo: reuse reduced model between steps (all computation except data)
@@ -40,7 +38,6 @@ def test_kalman_filter():
         d = jnp.atleast_1d(d)
         out = ckf.model_reduce(d, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
         z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
-
 
         # Condition:
         x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
@@ -52,19 +49,15 @@ def test_kalman_filter():
         z = x2_mid_y1
         x_mid_z = ckf.combine(outer=x_mid_z_general, inner=x_from_x2)
 
-
         # Reconstruct then save
         reconstructed = ckf.marginal(prior=x2_mid_y1, trafo=x_from_x2)
 
         means.append(reconstructed.mean)
         covs.append(reconstructed.cov)
 
-
-    assert jnp.allclose(jnp.stack(means)[:,  0], data_out)
-    assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0., atol=1e-5)
-    assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0., atol=1e-5)
-
-
+    assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
+    assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
+    assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0.0, atol=1e-5)
 
 
 def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
@@ -103,20 +96,17 @@ def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
 
 def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
     y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
-    out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-    z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
 
     # Reference:
     ref_x = ckf.marginal(prior=z, trafo=x_mid_z)
     _y, ref_backward = ckf.condition(prior=ref_x, trafo=y_mid_x)
     ref_x_mid_y = ckf.evaluate_conditional(y, trafo=ref_backward)
 
-    # Condition:
-    x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
-    _y1, backward = ckf.condition(prior=x2, trafo=y1_mid_x2_small)
-    x2_mid_y1 = ckf.evaluate_conditional(y1, trafo=backward)
+    # Reduced model:
+    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
+    x2_mid_y1, x_mid_x2 = ckf.model_reduced_apply(y, reduced=reduced)
 
-    x_mid_y_mean = ckf.evaluate_conditional(x2_mid_y1.mean, trafo=x_from_x2).mean
+    x_mid_y_mean = ckf.evaluate_conditional(x2_mid_y1.mean, trafo=x_mid_x2).mean
     assert jnp.allclose(x_mid_y_mean, ref_x_mid_y.mean)
 
 

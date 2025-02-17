@@ -60,13 +60,15 @@ def condition(*, prior: RandVar, trafo: Trafo):
 def evaluate_conditional(data, *, trafo: Trafo) -> RandVar:
     return RandVar(mean=trafo.linop @ data + trafo.bias, cov=trafo.cov)
 
+
 def combine(*, outer: Trafo, inner: Trafo) -> Trafo:
     linop = outer.linop @ inner.linop
     bias = outer.linop @ inner.bias + outer.bias
     cov = outer.linop @ inner.cov @ outer.linop.T + outer.cov
     return Trafo(linop, bias, cov)
 
-def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
+
+def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     # First QR iteration
     F = y_mid_x.cov_to_low_rank()
     _, ndim = F.shape
@@ -76,44 +78,56 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     R1, zeros = jnp.split(R, indices_or_sections=[ndim], axis=0)
 
     # Split measurement model and data
-
     y1_mid_x = V1.T @ y_mid_x
     y2_mid_x = V2.T @ y_mid_x
-    y1, y2 = V1.T @ y, V2.T @ y
 
     # Second QR iteration
     W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
-    W1, W2 = jnp.split(W, indices_or_sections=[len(y2)], axis=1)
-    S1, zeros = jnp.split(S, indices_or_sections=[len(y2)], axis=0)
+    W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
+    S1, zeros = jnp.split(S, indices_or_sections=[len(V2.T)], axis=0)
 
+    # Parametrise x2_mid_x1
     Q = x_mid_z.cov
     C = y_mid_x.linop
-    x1_value = jnp.linalg.solve(S1, y2 - y2_mid_x.bias)
     x1_mid_z_raw = W1.T @ x_mid_z
     x2_mid_z_raw = W2.T @ x_mid_z
     G = W2.T @ Q @ W1 @ jnp.linalg.inv(x1_mid_z_raw.cov)
     Z = x2_mid_z_raw.cov - G @ x1_mid_z_raw.cov @ G.T
 
-    x2_mid_z = Trafo(
-        linop=x2_mid_z_raw.linop - G @ x1_mid_z_raw.linop,
-        bias=x2_mid_z_raw.bias - G @ x1_mid_z_raw.bias + G @ x1_value,
-        cov=Z,
-    )
-    y1_mid_x2 = Trafo(
-        linop=V1.T @ C @ W2,
-        bias=V1.T @ C @ W1 @ x1_value + y1_mid_x.bias,
-        cov=R1 @ R1.T,
-    )
+    # Parametrise z_mid_y2
+    linop = S1 @ x1_mid_z_raw.linop
+    bias = S1 @ x1_mid_z_raw.bias + y2_mid_x.bias
+    cov = S1 @ W1.T @ x_mid_z.cov @ W1 @ S1.T
+    y2_mid_z = Trafo(linop, bias, cov)
+    _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
 
-    # Handle the z-to-y2 relation
-    y2_mid_z = Trafo(
-        linop=S1 @ x1_mid_z_raw.linop,
-        bias=S1 @ x1_mid_z_raw.bias + y2_mid_x.bias,
-        cov=S1 @ W1.T @ x_mid_z.cov @ W1 @ S1.T,
-    )
-    _y2, backward = condition(prior=z, trafo=y2_mid_z)
-    z_mid_y2 = evaluate_conditional(y2, trafo=backward)
+    reduced = (V1, V2, S1, y2_mid_x, x1_mid_z_raw, x2_mid_z_raw, G, Z, C, W1, W2, y1_mid_x, R1, z_mid_y2)
+    return reduced
 
 
-    x_from_x2 = Trafo(linop=W2, bias=W1 @ x1_value, cov=jnp.zeros((len(W1), len(W1))))
-    return z_mid_y2, x2_mid_z, y1_mid_x2, y1, x_from_x2
+def model_reduced_apply(y: jax.Array, *, reduced):
+    V1, V2, S1, y2_mid_x, x1_mid_z_raw, x2_mid_z_raw, G, Z, C, W1, W2, y1_mid_x, R1, z_mid_y2 = reduced
+
+    y1, y2 = V1.T @ y, V2.T @ y
+    x1_value = jnp.linalg.solve(S1, y2 - y2_mid_x.bias)
+
+    z_mid_y2 = evaluate_conditional(y2, trafo=z_mid_y2)
+
+    linop = x2_mid_z_raw.linop - G @ x1_mid_z_raw.linop
+    bias = x2_mid_z_raw.bias - G @ x1_mid_z_raw.bias + G @ x1_value
+    cov = Z
+    x2_mid_z = Trafo(linop, bias, cov)
+
+    linop = V1.T @ C @ W2
+    bias = V1.T @ C @ W1 @ x1_value + y1_mid_x.bias
+    cov = R1 @ R1.T
+    y1_mid_x2 = Trafo(linop, bias, cov)
+
+
+    x2 = marginal(prior=z_mid_y2, trafo=x2_mid_z)
+    _y1, backward = condition(prior=x2, trafo=y1_mid_x2)
+    x2_mid_y1 = evaluate_conditional(y1, trafo=backward)
+
+    x_mid_x2 = Trafo(linop=W2, bias=W1 @ x1_value, cov=jnp.zeros((len(W1), len(W1))))
+    return x2_mid_y1, x_mid_x2
+
