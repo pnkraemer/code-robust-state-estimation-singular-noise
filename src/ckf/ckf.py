@@ -42,13 +42,13 @@ def marginal(*, prior: RandVar, trafo: Trafo) -> RandVar:
     return RandVar(m, C)
 
 
-def condition(*, prior: RandVar, trafo: Trafo) -> RandVar:
+def condition(data, *, prior: RandVar, trafo: Trafo) -> RandVar:
     z = trafo.linop @ prior.mean + trafo.bias
     S = trafo.linop @ prior.cov @ trafo.linop.T + trafo.cov
     marg = RandVar(z, S)
 
     K = prior.cov @ trafo.linop.T @ jnp.linalg.inv(S)
-    m = prior.mean - K @ z
+    m = prior.mean - K @ (z - data)
     C = prior.cov - K @ trafo.linop @ prior.cov
     cond = RandVar(m, C)
     return marg, cond
@@ -85,18 +85,18 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
         bias=x2_mid_z_raw.bias - G @ x1_mid_z_raw.bias + G @ x1_value,
         cov=Z,
     )
-    y1_mid_x2 = Trafo(linop=V1.T @ C @ W2, bias=V1.T @ C @ W1 @ x1_value, cov=R1 @ R1.T)
+    y1_mid_x2 = Trafo(linop=V1.T @ C @ W2, bias=V1.T @ C @ W1 @ x1_value + y1_mid_x.bias, cov=R1 @ R1.T)
 
 
     # Handle the z-to-y2 relation
     y2_mid_z = Trafo(
-        linop=S1 @ W1.T @ x_mid_z.linop,
-        bias=S1 @ W1.T @ x_mid_z.bias,
+        linop=S1 @ x1_mid_z_raw.linop,
+        bias=S1 @ x1_mid_z_raw.bias + y2_mid_x.bias,
         cov=S1 @ W1.T @ x_mid_z.cov @ W1 @ S1.T,
     )
-    y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
+    y2, z_mid_y2 = condition(y2, prior=z, trafo=y2_mid_z)
 
-    return z_mid_y2, x2_mid_z, y1_mid_x2, x1_value
+    return z_mid_y2, x2_mid_z, y1_mid_x2, x1_value, y1, W1, W2
     # assert False
     # # Collect terms:
     #

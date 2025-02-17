@@ -20,21 +20,13 @@ def test_filter_one_step_works(z_dim=1, x_dim=7, y_dim=5):
     assert jnp.allclose(x_mid_y.cov[:, z_dim:y_dim], 0.0, atol=small_value)
 
 
-def test_model_align(z_dim=1, x_dim=7, y_dim=5):
+def test_model_align_shapes(z_dim=1, x_dim=7, y_dim=5):
     z, x_mid_z, y_mid_x = _model(z_shape=(z_dim,), x_shape=(x_dim,), y_shape=(y_dim,))
-    y = jnp.zeros((y_dim,))
+    y = jnp.ones((y_dim,))
     out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-    z_small, x2_mid_z_small, y1_mid_x2_small, x1_value = out
+    z_small, x2_mid_z_small, y1_mid_x2_small, x1_value, y1, W1, W2 = out
 
     # Assert shapes
-    print(jax.tree.map(jnp.shape, z_small))
-    print()
-    print(jax.tree.map(jnp.shape, x2_mid_z_small))
-    print()
-    print(jax.tree.map(jnp.shape, y1_mid_x2_small))
-    print()
-    print(jax.tree.map(jnp.shape, x1_value))
-
     assert z_small.mean.shape == (1,)
     assert z_small.cov.shape == (1, 1)
 
@@ -49,8 +41,28 @@ def test_model_align(z_dim=1, x_dim=7, y_dim=5):
 
     x1_dim = y_dim - z_dim
     assert x1_value.shape == (x1_dim,)
-    assert jnp.allclose(x1_value, y_mid_x.bias[z_dim:])
+    print(x1_value)
+    print(y_mid_x.bias[z_dim:])
+    assert jnp.allclose(x1_value, (y_mid_x.bias - y)[z_dim:])
 
+def test_model_align_values(z_dim=1, x_dim=7, y_dim=5):
+    z, x_mid_z, y_mid_x = _model(z_shape=(z_dim,), x_shape=(x_dim,), y_shape=(y_dim,))
+    y = jnp.ones((y_dim,))
+    out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
+    z_small, x2_mid_z_small, y1_mid_x2_small, x1_value, y1, W1, W2 = out
+
+    # Reference:
+    ref_x = ckf.marginal(prior=z, trafo=x_mid_z)
+    _y, ref_x_mid_y = ckf.condition(y, prior=ref_x, trafo=y_mid_x)
+
+    # Condition:
+    x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
+    _y1, x2_mid_y1 = ckf.condition(y1, prior=x2, trafo=y1_mid_x2_small)
+
+    assert jnp.allclose(W1 @ x1_value + W2 @ x2_mid_y1.mean, ref_x_mid_y.mean)
+
+
+    
 
 def _model(*, z_shape, x_shape, y_shape):
     key = jax.random.PRNGKey(seed=2)
@@ -65,7 +77,7 @@ def _model(*, z_shape, x_shape, y_shape):
     bias = jax.random.normal(k2, shape=x_shape)
     cov = jax.random.normal(k3, shape=(*x_shape, *x_shape))
     x_mid_z = ckf.Trafo(linop, bias, cov @ cov.T)
-    # todo: next up, remove all biases from the code and make the values pass tests
+
     bias = jax.random.normal(key, shape=y_shape)
     linop = jnp.eye(*y_shape, *x_shape)
     cov = jnp.eye(*y_shape, *z_shape)
