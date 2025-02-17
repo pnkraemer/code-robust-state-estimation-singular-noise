@@ -49,9 +49,7 @@ def test_model_align(z_dim=1, x_dim=7, y_dim=5):
 
     x1_dim = y_dim - z_dim
     assert x1_value.shape == (x1_dim,)
-    print(x1_value)
-    print(y_mid_x.bias)
-    assert jnp.allclose(x1_value, value)
+    assert jnp.allclose(x1_value, y_mid_x.bias[z_dim:])
 
 
 def _model(*, z_shape, x_shape, y_shape):
@@ -67,7 +65,7 @@ def _model(*, z_shape, x_shape, y_shape):
     bias = jax.random.normal(k2, shape=x_shape)
     cov = jax.random.normal(k3, shape=(*x_shape, *x_shape))
     x_mid_z = ckf.Trafo(linop, bias, cov @ cov.T)
-
+    # todo: next up, remove all biases from the code and make the values pass tests
     bias = jax.random.normal(key, shape=y_shape)
     linop = jnp.eye(*y_shape, *x_shape)
     cov = jnp.eye(*y_shape, *z_shape)

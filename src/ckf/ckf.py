@@ -55,11 +55,8 @@ def condition(*, prior: RandVar, trafo: Trafo) -> RandVar:
 
 
 def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
-    mu, Sigma = z.mean, z.cov
-    Phi, varphi, Q = x_mid_z.linop, x_mid_z.bias, x_mid_z.cov
-    C, cc, F = y_mid_x.linop, y_mid_x.bias, y_mid_x.cov_to_low_rank()
-
     # First QR iteration
+    F = y_mid_x.cov_to_low_rank()
     _, ndim = F.shape
     V, R = jnp.linalg.qr(F, mode="complete")
     V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
@@ -75,7 +72,9 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     W1, W2 = jnp.split(W, indices_or_sections=[len(y2)], axis=1)
     S1, zeros = jnp.split(S, indices_or_sections=[len(y2)], axis=0)
 
-    x1_value = jnp.linalg.solve(S1, y2)
+    Q = x_mid_z.cov
+    C = y_mid_x.linop
+    x1_value = jnp.linalg.solve(S1, y2 - y2_mid_x.bias)
     x1_mid_z_raw = W1.T @ x_mid_z
     x2_mid_z_raw = W2.T @ x_mid_z
     G = W2.T @ Q @ W1 @ jnp.linalg.inv(x1_mid_z_raw.cov)
