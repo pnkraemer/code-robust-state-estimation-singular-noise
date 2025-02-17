@@ -7,12 +7,37 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 
-def test_filter_one_step_works(z_dim=1, x_dim=99, y_dim=(2, 95)):
-    data, (z, x_mid_z, y_mid_x) = _model(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+def test_kalman_filter():
+    (z, x_mid_z, y_mid_x) = _model_interpolation()
+
+    data_in = jnp.linspace(0, 1, num=20)
+    data_out = data_in + 0.1 + jnp.sin(data_in**2)
+
+    means, covs = [], []
+    x = z
+
+    for d in data_out:
+        x = ckf.marginal(prior=x, trafo=x_mid_z)
+        _, x = ckf.condition(prior=x, trafo=y_mid_x)
+
+        x = ckf.evaluate_conditional(jnp.atleast_1d(d), trafo=x)
+        means.append(x.mean)
+        covs.append(x.cov)
+
+    print(data_out)
+    print(jnp.stack(means))
+    print(jnp.stack(covs))
+
+
+    assert False
+
+
+def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
+    data, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
 
     x = ckf.marginal(prior=z, trafo=x_mid_z)
     _y, backward = ckf.condition(prior=x, trafo=y_mid_x)
-    x_mid_y = ckf.evaluate(data, trafo=backward)
+    x_mid_y = ckf.evaluate_conditional(data, trafo=backward)
 
     assert x_mid_y.mean.shape == (x_dim,)
     assert x_mid_y.cov.shape == (x_dim, x_dim)
@@ -22,7 +47,7 @@ def test_filter_one_step_works(z_dim=1, x_dim=99, y_dim=(2, 95)):
 
 
 def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
-    y, (z, x_mid_z, y_mid_x) = _model(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+    y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
     out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
     z_small, x2_mid_z_small, y1_mid_x2_small, x1_value, y1, W1, W2 = out
 
@@ -45,24 +70,42 @@ def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
 
 
 def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
-    y, (z, x_mid_z, y_mid_x) = _model(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+    y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
     out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
     z_small, x2_mid_z_small, y1_mid_x2_small, x1_value, y1, W1, W2 = out
 
     # Reference:
     ref_x = ckf.marginal(prior=z, trafo=x_mid_z)
     _y, ref_backward = ckf.condition(prior=ref_x, trafo=y_mid_x)
-    ref_x_mid_y = ckf.evaluate(y, trafo=ref_backward)
+    ref_x_mid_y = ckf.evaluate_conditional(y, trafo=ref_backward)
 
     # Condition:
     x2 = ckf.marginal(prior=z_small, trafo=x2_mid_z_small)
     _y1, backward = ckf.condition(prior=x2, trafo=y1_mid_x2_small)
-    x2_mid_y1 = ckf.evaluate(y1, trafo=backward)
+    x2_mid_y1 = ckf.evaluate_conditional(y1, trafo=backward)
 
     assert jnp.allclose(W1 @ x1_value + W2 @ x2_mid_y1.mean, ref_x_mid_y.mean)
 
 
-def _model(*, dim_z, dim_x, dim_y):
+def _model_interpolation():
+    m0 = jnp.zeros((2,))
+    c0 = jnp.eye(2)
+    z = ckf.RandVar(m0, c0)
+
+    linop = jnp.eye(2)
+    bias = jnp.zeros((2,))
+    cov = jnp.eye(2)
+    x_mid_z = ckf.Trafo(linop, bias, cov)
+
+    linop = jnp.eye(1, 2)
+    bias = jnp.zeros((1,))
+    cov = jnp.zeros((1, 1))
+    y_mid_x = ckf.Trafo(linop, bias, cov)
+
+    return (z, x_mid_z, y_mid_x)
+
+
+def _model_random(*, dim_z, dim_x, dim_y):
     key = jax.random.PRNGKey(seed=2)
 
     key, k1, k2 = jax.random.split(key, num=3)
