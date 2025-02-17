@@ -68,7 +68,7 @@ def combine(*, outer: Trafo, inner: Trafo) -> Trafo:
     return Trafo(linop, bias, cov)
 
 
-def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
+def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
     # First QR iteration
     F = y_mid_x.cov_to_low_rank()
     _, ndim = F.shape
@@ -90,24 +90,23 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     G = W2.T @ Q @ W1 @ jnp.linalg.inv(x1_mid_z_raw.cov)
     Z = x2_mid_z_raw.cov - G @ x1_mid_z_raw.cov @ G.T
 
-    # Parametrise z_mid_y2
+    # Parametrise y2_mid_z
     linop = S1 @ x1_mid_z_raw.linop
     bias = S1 @ x1_mid_z_raw.bias + y2_mid_x.bias
     cov = S1 @ W1.T @ x_mid_z.cov @ W1 @ S1.T
     y2_mid_z = Trafo(linop, bias, cov)
-    _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
 
     linop = x2_mid_z_raw.linop - G @ x1_mid_z_raw.linop
     bias = x2_mid_z_raw.bias - G @ x1_mid_z_raw.bias
     cov = Z
     x2_mid_z_no_x1 = Trafo(linop, bias, cov)
 
-    reduced = ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, z_mid_y2)
+    reduced = ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, y2_mid_z)
     return reduced
 
 
-def model_reduced_apply(y: jax.Array, *, reduced):
-    ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, z_mid_y2) = reduced
+def model_reduced_apply(y: jax.Array, *, z, reduced, extra_trafo):
+    ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, y2_mid_z) = reduced
 
     # Split measurement model and data
     y1_mid_x = V1.T @ y_mid_x
@@ -116,12 +115,21 @@ def model_reduced_apply(y: jax.Array, *, reduced):
     y1, y2 = V1.T @ y, V2.T @ y
     x1_value = jnp.linalg.solve(S1, y2 - y2_mid_x.bias)
 
+    # Condition z on y2
+    if extra_trafo is not None:
+        y2_mid_z = combine(outer=y2_mid_z, inner=extra_trafo)
+    _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
     z = evaluate_conditional(y2, trafo=z_mid_y2)
+
+    # Marginalise to the "next future" x2
     x2_mid_z = Trafo(
         x2_mid_z_no_x1.linop, x2_mid_z_no_x1.bias + G @ x1_value, x2_mid_z_no_x1.cov
     )
+    if extra_trafo is not None:
+        x2_mid_z = combine(outer=x2_mid_z, inner=extra_trafo)
     x2 = marginal(prior=z, trafo=x2_mid_z)
 
+    # Condition x2 on y2
     linop = V1.T @ C @ W2
     bias = V1.T @ C @ W1 @ x1_value + y1_mid_x.bias
     cov = R1 @ R1.T
