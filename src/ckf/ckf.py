@@ -105,7 +105,7 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
     return reduced
 
 
-def model_reduced_apply(y: jax.Array, *, z, reduced, extra_trafo):
+def model_reduced_apply(y: jax.Array, *, z, reduced):
     ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, y2_mid_z) = reduced
 
     # Split measurement model and data
@@ -116,8 +116,6 @@ def model_reduced_apply(y: jax.Array, *, z, reduced, extra_trafo):
     x1_value = jnp.linalg.solve(S1, y2 - y2_mid_x.bias)
 
     # Condition z on y2
-    if extra_trafo is not None:
-        y2_mid_z = combine(outer=y2_mid_z, inner=extra_trafo)
     _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
     z = evaluate_conditional(y2, trafo=z_mid_y2)
 
@@ -125,8 +123,6 @@ def model_reduced_apply(y: jax.Array, *, z, reduced, extra_trafo):
     x2_mid_z = Trafo(
         x2_mid_z_no_x1.linop, x2_mid_z_no_x1.bias + G @ x1_value, x2_mid_z_no_x1.cov
     )
-    if extra_trafo is not None:
-        x2_mid_z = combine(outer=x2_mid_z, inner=extra_trafo)
     x2 = marginal(prior=z, trafo=x2_mid_z)
 
     # Condition x2 on y2

@@ -33,20 +33,14 @@ def test_kalman_filter():
     # todo: make square-root
     # todo: track marginal likelihoods
 
-    extra_trafo = None
     for d in data_out:
         d = jnp.atleast_1d(d)
         reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-        z, extra_trafo = ckf.model_reduced_apply(
-            d, z=z, reduced=reduced, extra_trafo=extra_trafo
-        )
+        x2, x_mid_x2 = ckf.model_reduced_apply(d, z=z, reduced=reduced)
+        z = ckf.marginal(prior=x2, trafo=x_mid_x2)
 
-
-        # Reconstruct (for plotting reasons) then save
-        reconstructed = ckf.marginal(prior=z, trafo=extra_trafo)
-
-        means.append(reconstructed.mean)
-        covs.append(reconstructed.cov)
+        means.append(z.mean)
+        covs.append(z.cov)
 
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
@@ -71,7 +65,7 @@ def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
     y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
 
     reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, extra_trafo=None)
+    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced)
 
     x2_dim = x_dim - y_dim[0]
     assert x2_mid_data.mean.shape == (x2_dim,)
@@ -88,7 +82,7 @@ def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
 
     # Reduced model:
     reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, extra_trafo=None)
+    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced)
 
     x_mid_data = ckf.marginal(prior=x2_mid_data, trafo=x_mid_x2)
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean)
