@@ -68,9 +68,9 @@ def combine(*, outer: Trafo, inner: Trafo) -> Trafo:
     return Trafo(linop, bias, cov)
 
 
-def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
+def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F):
     # First QR iteration
-    F = y_mid_x.cov_to_low_rank()
+    # F = y_mid_x.cov_to_low_rank()
     _, ndim = F.shape
     V, R = jnp.linalg.qr(F, mode="complete")
     V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)

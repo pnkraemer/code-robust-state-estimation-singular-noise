@@ -8,7 +8,7 @@ jax.config.update("jax_enable_x64", True)
 
 
 def test_kalman_filter():
-    (z, x_mid_z, y_mid_x) = _model_interpolation()
+    (z, x_mid_z, y_mid_x), F = _model_interpolation()
 
     data_in = jnp.linspace(0, 1, num=20)
     data_out = data_in + 0.1 + jnp.sin(data_in**2)
@@ -35,7 +35,7 @@ def test_kalman_filter():
 
     for d in data_out:
         d = jnp.atleast_1d(d)
-        reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+        reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F)
         x2, x_mid_x2 = ckf.model_reduced_apply(d, z=z, reduced=reduced)
         z = ckf.marginal(prior=x2, trafo=x_mid_x2)
 
@@ -48,7 +48,7 @@ def test_kalman_filter():
 
 
 def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
-    data, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+    data, (z, x_mid_z, y_mid_x), _ = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
 
     x = ckf.marginal(prior=z, trafo=x_mid_z)
     _y, backward = ckf.condition(prior=x, trafo=y_mid_x)
@@ -62,9 +62,9 @@ def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
 
 
 def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
-    y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+    y, (z, x_mid_z, y_mid_x), F = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
 
-    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F)
     x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced)
 
     x2_dim = x_dim - y_dim[0]
@@ -72,8 +72,8 @@ def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
     assert x2_mid_data.cov.shape == (x2_dim, x2_dim)
 
 
-def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
-    y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
+def test_model_align_values(z_dim=1, x_dim=6, y_dim=(1, 2)):
+    y, (z, x_mid_z, y_mid_x), F = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
 
     # Reference:
     ref_x = ckf.marginal(prior=z, trafo=x_mid_z)
@@ -81,10 +81,11 @@ def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
     ref_x_mid_y = ckf.evaluate_conditional(y, trafo=ref_backward)
 
     # Reduced model:
-    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F)
     x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced)
 
     x_mid_data = ckf.marginal(prior=x2_mid_data, trafo=x_mid_x2)
+
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean)
 
 
@@ -103,11 +104,11 @@ def _model_interpolation():
     cov = jnp.zeros((1, 1))
     y_mid_x = ckf.Trafo(linop, bias, cov)
 
-    return (z, x_mid_z, y_mid_x)
+    return (z, x_mid_z, y_mid_x), cov
 
 
 def _model_random(*, dim_z, dim_x, dim_y):
-    key = jax.random.PRNGKey(seed=2)
+    key = jax.random.PRNGKey(seed=3)
 
     key, k1, k2 = jax.random.split(key, num=3)
     m0 = jax.random.normal(k1, shape=(dim_z,))
@@ -126,8 +127,8 @@ def _model_random(*, dim_z, dim_x, dim_y):
     assert dim_x >= dim_y_total
     linop = jax.random.normal(k1, shape=(dim_y_total, dim_x))
     bias = jax.random.normal(k2, shape=(dim_y_total,))
-    cov = jax.random.normal(k3, shape=(dim_y_total, dim_y_nonsing))
-    y_mid_x = ckf.Trafo(linop, bias, cov @ cov.T)
+    F = jax.random.normal(k3, shape=(dim_y_total, dim_y_nonsing))
+    y_mid_x = ckf.Trafo(linop, bias, F @ F.T)
 
     data = jax.random.normal(key, shape=(dim_y_total,))
-    return data, (z, x_mid_z, y_mid_x)
+    return data, (z, x_mid_z, y_mid_x), F
