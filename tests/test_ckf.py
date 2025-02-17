@@ -127,6 +127,7 @@ def _model_random(*, dim_z, dim_x, dim_y):
     dim_y_sing, dim_y_nonsing = dim_y
     dim_y_total = dim_y_sing + dim_y_nonsing
     assert dim_x >= dim_y_total
+
     linop = jax.random.normal(k1, shape=(dim_y_total, dim_x))
     bias = jax.random.normal(k2, shape=(dim_y_total,))
     F = jax.random.normal(k3, shape=(dim_y_total, dim_y_nonsing))
