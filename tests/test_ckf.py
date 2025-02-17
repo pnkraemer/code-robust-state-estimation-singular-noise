@@ -24,12 +24,11 @@ def test_kalman_filter():
         means.append(x.mean)
         covs.append(x.cov)
 
-    print(data_out)
-    print(jnp.stack(means))
-    print(jnp.stack(covs))
+    
+    assert jnp.allclose(jnp.stack(means)[:,  0], data_out)
+    assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0., atol=1e-5)
+    assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0., atol=1e-5)
 
-
-    assert False
 
 
 def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
@@ -49,7 +48,7 @@ def test_filter_one_step_works(z_dim=1, x_dim=9, y_dim=(2, 5)):
 def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
     y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
     out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-    z_small, x2_mid_z_small, y1_mid_x2_small, x1_value, y1, W1, W2 = out
+    z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
 
     # Assert shapes
     assert z_small.mean.shape == (z_dim,)
@@ -65,14 +64,11 @@ def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
     assert y1_mid_x2_small.bias.shape == (y1_dim,)
     assert y1_mid_x2_small.cov.shape == (y1_dim, y1_dim)
 
-    x1_dim = x_dim - x2_dim
-    assert x1_value.shape == (x1_dim,)
-
 
 def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
     y, (z, x_mid_z, y_mid_x) = _model_random(dim_z=z_dim, dim_x=x_dim, dim_y=y_dim)
     out = ckf.model_reduce(y, y_mid_x=y_mid_x, x_mid_z=x_mid_z, z=z)
-    z_small, x2_mid_z_small, y1_mid_x2_small, x1_value, y1, W1, W2 = out
+    z_small, x2_mid_z_small, y1_mid_x2_small, y1, x_from_x2 = out
 
     # Reference:
     ref_x = ckf.marginal(prior=z, trafo=x_mid_z)
@@ -84,7 +80,8 @@ def test_model_align_values(z_dim=1, x_dim=7, y_dim=(2, 3)):
     _y1, backward = ckf.condition(prior=x2, trafo=y1_mid_x2_small)
     x2_mid_y1 = ckf.evaluate_conditional(y1, trafo=backward)
 
-    assert jnp.allclose(W1 @ x1_value + W2 @ x2_mid_y1.mean, ref_x_mid_y.mean)
+    x_mid_y_mean = ckf.evaluate_conditional(x2_mid_y1.mean, trafo=x_from_x2).mean
+    assert jnp.allclose(x_mid_y_mean, ref_x_mid_y.mean)
 
 
 def _model_interpolation():

@@ -108,4 +108,6 @@ def model_reduce(y: jax.Array, *, y_mid_x: Trafo, x_mid_z: Trafo, z: RandVar):
     _y2, backward = condition(prior=z, trafo=y2_mid_z)
     z_mid_y2 = evaluate_conditional(y2, trafo=backward)
 
-    return z_mid_y2, x2_mid_z, y1_mid_x2, x1_value, y1, W1, W2
+
+    x_from_x2 = Trafo(linop=W2, bias=W1 @ x1_value, cov=jnp.zeros((len(W1), len(W1))))
+    return z_mid_y2, x2_mid_z, y1_mid_x2, y1, x_from_x2
