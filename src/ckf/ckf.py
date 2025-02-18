@@ -137,7 +137,6 @@ def impl_cholesky_based() -> Impl:
         R12 = R[:d_out, d_out:]
 
         # Implements G = R12.T @ np.linalg.inv(R_Y.T) in clever:
-        # G = R12.T @ jnp.linalg.inv(R_Y.T)
         G = jax.scipy.linalg.solve_triangular(R_Y, R12, lower=False).T
 
         # ~R_{X \mid Y}
@@ -179,7 +178,7 @@ def impl_cov_based() -> Impl:
         C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
         C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
 
-        G = C12 @ jnp.linalg.inv(C1)
+        G = jnp.linalg.solve(C1.T, C12.T).T
         Z = C2 - G @ C1 @ G.T
 
         bias1, bias2 = jnp.split(trafo.noise.mean, indices_or_sections=[index], axis=0)
@@ -206,7 +205,7 @@ def impl_cov_based() -> Impl:
         S = trafo.linop @ prior.cov @ trafo.linop.T + trafo.noise.cov
         marg = RandVar(z, S)
 
-        K = prior.cov @ trafo.linop.T @ jnp.linalg.inv(S)
+        K = jnp.linalg.solve(S.T, trafo.linop @ prior.cov).T
         m = prior.mean - K @ z
         C = prior.cov - K @ trafo.linop @ prior.cov
         cond = Trafo(linop=K, noise=RandVar(mean=m, cov=C))
@@ -293,7 +292,7 @@ def model_reduced_apply(y: jax.Array, *, z, reduced, impl):
     # todo: make the rank of F an argument somewhere
     # todo: make all solves into solve_triangular etc.
     # todo: marginal likelihood
-    # todo: test that cov-based and chol-based yield the same values
+    # todo: test that cov-based and chol-based yield the same values (by testing that all marginal likelihood configs are identical?)
 
     # Read off prepared values
     reduced_model, info = reduced

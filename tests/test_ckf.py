@@ -22,6 +22,7 @@ class DimCfg(NamedTuple):
     y_sing: int
     y_nonsing: int
 
+
 def case_dim_base():
     return DimCfg(1, 5, 2, 3)
 
@@ -68,9 +69,8 @@ def test_model_align_values(dim, impl):
     x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
     tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
-    print(x_mid_data.mean)
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
-    assert False
+
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_kalman_filter(impl):
@@ -107,7 +107,6 @@ def test_kalman_filter(impl):
 
         means.append(z.mean)
         covs.append(z.cov_dense())
-
 
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
