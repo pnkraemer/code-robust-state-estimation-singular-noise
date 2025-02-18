@@ -22,8 +22,6 @@ class DimCfg(NamedTuple):
     y_sing: int
     y_nonsing: int
 
-# todo: test that cov-based and chol-based yield the same values
-
 def case_dim_base():
     return DimCfg(1, 5, 2, 3)
 

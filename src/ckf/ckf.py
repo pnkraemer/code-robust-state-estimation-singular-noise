@@ -291,7 +291,9 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F, impl):
 
 def model_reduced_apply(y: jax.Array, *, z, reduced, impl):
     # todo: make the rank of F an argument somewhere
+    # todo: make all solves into solve_triangular etc.
     # todo: marginal likelihood
+    # todo: test that cov-based and chol-based yield the same values
 
     # Read off prepared values
     reduced_model, info = reduced
