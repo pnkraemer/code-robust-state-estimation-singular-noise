@@ -42,8 +42,6 @@ def model_random(*, dim: DimCfg, impl):
     c0 = jax.random.normal(k2, shape=(dim.z, dim.z))
     z = impl.rv_from_cholesky(m0, c0)
 
-    # z = ckf.RandVar(m0, c0 @ c0.T)
-
     key, k1, k2, k3 = jax.random.split(key, num=4)
     linop = jax.random.normal(k1, shape=(dim.x, dim.z))
     bias = jax.random.normal(k2, shape=(dim.x,))
@@ -62,4 +60,4 @@ def model_random(*, dim: DimCfg, impl):
     y_mid_x = ckf.Trafo(linop, noise)
 
     data = jax.random.normal(key, shape=(dim_y_total,))
-    return data, (z, x_mid_z, y_mid_x), F
+    return (z, x_mid_z, y_mid_x), F, data

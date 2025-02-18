@@ -8,38 +8,38 @@ import pytest_cases
 from typing import NamedTuple
 
 
-def case_impl_cov_based():
+def case_impl_cov_based() -> ckf.Impl:
     return ckf.impl_cov_based()
 
 
-def case_impl_cholesky_based():
+def case_impl_cholesky_based() -> ckf.Impl:
     return ckf.impl_cholesky_based()
 
 
-
-def case_dim_base():
-    return test_util.DimCfg(1, 5, 2, 3)
-
-
-def case_dim_sing_zero():
-    return test_util.DimCfg(1, 5, 2, 0)
+def case_dim_base() -> test_util.DimCfg:
+    return test_util.DimCfg(z=1, x=5, y_sing=2, y_nonsing=3)
 
 
-def case_dim_nonsing_zero():
-    return test_util.DimCfg(1, 5, 0, 3)
+def case_dim_nonsing_zero() -> test_util.DimCfg:
+    return test_util.DimCfg(z=1, x=5, y_sing=2, y_nonsing=0)
 
 
-def case_dim_sing_and_nonsing_zero():
-    return test_util.DimCfg(1, 1, 0, 0)
+def case_dim_sing_zero() -> test_util.DimCfg:
+    return test_util.DimCfg(z=1, x=5, y_sing=0, y_nonsing=3)
+
+
+def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
+    return test_util.DimCfg(z=1, x=5, y_sing=0, y_nonsing=0)
 
 
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_shapes(impl, dim):
-    y, (z, x_mid_z, y_mid_x), F = test_util.model_random(dim=dim, impl=impl)
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
-    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
-    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, impl=impl)
+    model_reduce, model_apply = ckf.model_reduction(F=F, impl=impl)
+    reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    x2_mid_data, x_mid_x2 = model_apply(y, z=z, reduced=reduced)
 
     x2_dim = dim.x - dim.y_sing
     assert x2_mid_data.mean.shape == (x2_dim,)
@@ -49,7 +49,7 @@ def test_model_reduce_shapes(impl, dim):
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_values(dim, impl):
-    y, (z, x_mid_z, y_mid_x), F = test_util.model_random(dim=dim, impl=impl)
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
     # Reference:
     ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
@@ -57,33 +57,15 @@ def test_model_reduce_values(dim, impl):
     ref_x_mid_y = impl.trafo_evaluate(y, trafo=ref_backward)
 
     # Reduced model:
-    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
-    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, impl=impl)
+    model_reduce, model_apply = ckf.model_reduction(F=F, impl=impl)
+    reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    x2_mid_data, x_mid_x2 = model_apply(y, z=z, reduced=reduced)
 
     x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
     tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
 
-
-@pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
-@pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
-def test_model_reduce_values(dim, impl):
-    y, (z, x_mid_z, y_mid_x), F = test_util.model_random(dim=dim, impl=impl)
-
-    # Reference:
-    ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
-    _y, ref_backward = impl.rv_condition(prior=ref_x, trafo=y_mid_x)
-    ref_x_mid_y = impl.trafo_evaluate(y, trafo=ref_backward)
-
-    # Reduced model:
-    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
-    x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, impl=impl)
-
-    x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
-
-    tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
-    assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
@@ -110,10 +92,13 @@ def test_kalman_filter(impl):
 
     means, covs = [], []
 
+    model_reduce, model_apply = ckf.model_reduction(F=F, impl=impl)
+
+
     for d in data_out:
         d = jnp.atleast_1d(d)
-        reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
-        x2, x_mid_x2 = ckf.model_reduced_apply(d, z=z, reduced=reduced, impl=impl)
+        reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+        x2, x_mid_x2 = model_apply(d, z=z, reduced=reduced)
         z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
 
         means.append(z.mean)

@@ -245,82 +245,84 @@ def trafo_invert_dirac(y: jax.Array, /, *, dirac_trafo) -> jax.Array:
     return jnp.linalg.solve(A, b)
 
 
-def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F, impl):
-    # First QR iteration
-    _, ndim = F.shape
-    V, R = jnp.linalg.qr(F, mode="complete")
-    V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
-    y1_mid_x = V1.T @ y_mid_x
-    y2_mid_x = V2.T @ y_mid_x
+def model_reduction(F, impl):
+    def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
+        # First QR iteration
+        _, ndim = F.shape
+        V, R = jnp.linalg.qr(F, mode="complete")
+        V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
+        y1_mid_x = V1.T @ y_mid_x
+        y2_mid_x = V2.T @ y_mid_x
 
-    # Second QR iteration
-    W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
-    W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
+        # Second QR iteration
+        W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
+        W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
 
-    # Factorise the z-to-x conditional
-    x1_and_x2_mid_z = W.T @ x_mid_z
-    x1_mid_z, x2_mid_x1_and_z = impl.trafo_factorise(
-        trafo=x1_and_x2_mid_z, index=len(V2.T)
-    )
+        # Factorise the z-to-x conditional
+        x1_and_x2_mid_z = W.T @ x_mid_z
+        x1_mid_z, x2_mid_x1_and_z = impl.trafo_factorise(
+            trafo=x1_and_x2_mid_z, index=len(V2.T)
+        )
 
-    # y2 | x1 is deterministic (ie zero cov) and y2 is independent of x2 given x1
-    y2_mid_x1 = y2_mid_x @ W1
+        # y2 | x1 is deterministic (ie zero cov) and y2 is independent of x2 given x1
+        y2_mid_x1 = y2_mid_x @ W1
 
-    # y1 now depends on both x1 and x2; we implement this as a split' conditional,
-    #  which is a conditional with two linops
-    y1_mid_x1_and_x2 = trafo_split(trafo=(y1_mid_x @ W), index=len(V2.T))
+        # y1 now depends on both x1 and x2; we implement this as a split' conditional,
+        #  which is a conditional with two linops
+        y1_mid_x1_and_x2 = trafo_split(trafo=(y1_mid_x @ W), index=len(V2.T))
 
-    # We need to memorise how to turn x1/x2 back into x
-    trafo = Trafo(
-        W, impl.rv_from_cholesky(jnp.zeros((len(W),)), jnp.zeros((len(W), len(W))))
-    )
-    x_mid_x1_and_x2 = trafo_split(trafo=trafo, index=len(V2.T))
+        # We need to memorise how to turn x1/x2 back into x
+        trafo = Trafo(
+            W, impl.rv_from_cholesky(jnp.zeros((len(W),)), jnp.zeros((len(W), len(W))))
+        )
+        x_mid_x1_and_x2 = trafo_split(trafo=trafo, index=len(V2.T))
 
-    # We only care about y2 | z, not about x1 | z, so we combine transformations
-    y2_mid_z = impl.trafo_combine(outer=y2_mid_x1, inner=x1_mid_z)
+        # We only care about y2 | z, not about x1 | z, so we combine transformations
+        y2_mid_z = impl.trafo_combine(outer=y2_mid_x1, inner=x1_mid_z)
 
-    # Return values:
-    reduced_model = (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2)
-    info_transform_back = x_mid_x1_and_x2
-    info_identify_constraint = y2_mid_x1
-    info_split_data = (V1, V2)
-    info = (info_transform_back, info_identify_constraint, info_split_data)
-    return reduced_model, info
+        # Return values:
+        reduced_model = (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2)
+        info_transform_back = x_mid_x1_and_x2
+        info_identify_constraint = y2_mid_x1
+        info_split_data = (V1, V2)
+        info = (info_transform_back, info_identify_constraint, info_split_data)
+        return reduced_model, info
 
 
-def model_reduced_apply(y: jax.Array, *, z, reduced, impl):
-    # todo: make the rank of F an argument somewhere
-    # todo: make all solves into solve_triangular etc.
-    # todo: marginal likelihood
-    # todo: test that cov-based and chol-based yield the same values (by testing that all marginal likelihood configs are identical?)
+    def model_reduced_apply(y: jax.Array, *, z, reduced):
+        # todo: make the rank of F an argument somewhere
+        # todo: make all solves into solve_triangular etc.
+        # todo: marginal likelihood
+        # todo: test that cov-based and chol-based yield the same values (by testing that all marginal likelihood configs are identical?)
 
-    # Read off prepared values
-    reduced_model, info = reduced
-    (info_transform_back, info_identify_constraint, info_split_data) = info
-    (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2) = reduced_model
-    x_mid_x1_and_x2 = info_transform_back
-    y2_mid_x1 = info_identify_constraint
-    (V1, V2) = info_split_data
+        # Read off prepared values
+        reduced_model, info = reduced
+        (info_transform_back, info_identify_constraint, info_split_data) = info
+        (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2) = reduced_model
+        x_mid_x1_and_x2 = info_transform_back
+        y2_mid_x1 = info_identify_constraint
+        (V1, V2) = info_split_data
 
-    # Split the data data
-    y1, y2 = V1.T @ y, V2.T @ y
+        # Split the data data
+        y1, y2 = V1.T @ y, V2.T @ y
 
-    # Fix y2 (via x1) in remaining conditionals.
-    #  Recall that by construction of the QR decompositions,
-    #  y2_mid_x1 has zero covariance.
-    x1_value = trafo_invert_dirac(y2, dirac_trafo=y2_mid_x1)
-    x2_mid_z = impl.split_trafo_fix_x1(x1_value, split_trafo=x2_mid_x1_and_z)
-    y1_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=y1_mid_x1_and_x2)
-    x_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=x_mid_x1_and_x2)
+        # Fix y2 (via x1) in remaining conditionals.
+        #  Recall that by construction of the QR decompositions,
+        #  y2_mid_x1 has zero covariance.
+        x1_value = trafo_invert_dirac(y2, dirac_trafo=y2_mid_x1)
+        x2_mid_z = impl.split_trafo_fix_x1(x1_value, split_trafo=x2_mid_x1_and_z)
+        y1_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=y1_mid_x1_and_x2)
+        x_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=x_mid_x1_and_x2)
 
-    # Fix y2 in the "prior" distribution
-    _y2, z_mid_y2 = impl.rv_condition(prior=z, trafo=y2_mid_z)
-    z = impl.trafo_evaluate(y2, trafo=z_mid_y2)
+        # Fix y2 in the "prior" distribution
+        _y2, z_mid_y2 = impl.rv_condition(prior=z, trafo=y2_mid_z)
+        z = impl.trafo_evaluate(y2, trafo=z_mid_y2)
 
-    # Now we have z, x2_mid_z, and y1_mid_x2
-    # which is a "complete model" (just smaller than the previous one)
-    # and we can run the usual estimation
-    x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
-    _y1, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
-    x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
-    return x2_mid_y1, x_mid_x2
+        # Now we have z, x2_mid_z, and y1_mid_x2
+        # which is a "complete model" (just smaller than the previous one)
+        # and we can run the usual estimation
+        x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
+        _y1, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
+        x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
+        return x2_mid_y1, x_mid_x2
+    return model_reduce, model_reduced_apply
