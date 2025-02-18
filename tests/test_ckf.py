@@ -37,7 +37,7 @@ def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
 def test_model_reduce_shapes(impl, dim):
     (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
-    model_reduce, model_apply = ckf.model_reduction(F=F, impl=impl)
+    model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
     reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
     x2_mid_data, x_mid_x2 = model_apply(y, z=z, reduced=reduced)
 
@@ -57,7 +57,7 @@ def test_model_reduce_values(dim, impl):
     ref_x_mid_y = impl.trafo_evaluate(y, trafo=ref_backward)
 
     # Reduced model:
-    model_reduce, model_apply = ckf.model_reduction(F=F, impl=impl)
+    model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
     reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
     x2_mid_data, x_mid_x2 = model_apply(y, z=z, reduced=reduced)
 
@@ -92,7 +92,7 @@ def test_kalman_filter(impl):
 
     means, covs = [], []
 
-    model_reduce, model_apply = ckf.model_reduction(F=F, impl=impl)
+    model_reduce, model_apply = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
 
 
     for d in data_out:

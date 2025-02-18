@@ -27,11 +27,11 @@ def model_interpolation(impl):
 
     linop = jnp.eye(1, 2)
     bias = jnp.zeros((1,))
-    cov = jnp.zeros((1, 1))
-    noise = impl.rv_from_cholesky(bias, cov)
+    cholesky = jnp.zeros((1, 0))  # zero-rank
+    noise = impl.rv_from_cholesky(bias, cholesky)
     y_mid_x = ckf.Trafo(linop, noise)
 
-    return (z, x_mid_z, y_mid_x), cov
+    return (z, x_mid_z, y_mid_x), cholesky
 
 
 def model_random(*, dim: DimCfg, impl):

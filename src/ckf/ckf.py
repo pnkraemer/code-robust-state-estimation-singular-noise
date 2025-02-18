@@ -45,7 +45,7 @@ class Impl[T]:
     trafo_evaluate: Callable[[jax.Array, Trafo[T]], T]
 
     split_trafo_fix_x1: Callable[[jax.Array, SplitTrafo[T]], Trafo[T]]
-
+    get_F: Callable
 
 def impl_cholesky_based() -> Impl:
     @jax.tree_util.register_dataclass
@@ -142,6 +142,8 @@ def impl_cholesky_based() -> Impl:
         # ~R_{X \mid Y}
         R_XY = R[d_out:, d_out:]
         return R_Y, (R_XY, G)
+    def get_F(trafo, F_rank):
+        return trafo.noise.cholesky
 
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
@@ -151,6 +153,7 @@ def impl_cholesky_based() -> Impl:
         trafo_combine=trafo_combine,
         trafo_evaluate=trafo_evaluate,
         split_trafo_fix_x1=split_trafo_fix_x1,
+        get_F=get_F
     )
 
 
@@ -223,6 +226,15 @@ def impl_cov_based() -> Impl:
         linop = split_trafo.linop2
         return Trafo(linop, noise)
 
+    def get_F(trafo: Trafo, F_rank):
+        eigh = jnp.linalg.eigh(trafo.noise.cov)
+
+        i = jnp.flip(jnp.argsort(eigh.eigenvalues))[:F_rank]
+        vals = eigh.eigenvalues[i]
+        vecs = eigh.eigenvectors[:, i]
+        return vecs @ jnp.diag(jnp.sqrt(vals))
+
+
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
         rv_condition=rv_condition,
@@ -231,6 +243,7 @@ def impl_cov_based() -> Impl:
         trafo_combine=trafo_combine,
         trafo_evaluate=trafo_evaluate,
         split_trafo_fix_x1=split_trafo_fix_x1,
+        get_F=get_F
     )
 
 
@@ -245,12 +258,14 @@ def trafo_invert_dirac(y: jax.Array, /, *, dirac_trafo) -> jax.Array:
     return jnp.linalg.solve(A, b)
 
 
-def model_reduction(F, impl):
+def model_reduction(F_rank, impl):
     def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
+        # Extract F
+        F = impl.get_F(y_mid_x, F_rank=F_rank)
+
         # First QR iteration
-        _, ndim = F.shape
         V, R = jnp.linalg.qr(F, mode="complete")
-        V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
+        V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
         y1_mid_x = V1.T @ y_mid_x
         y2_mid_x = V2.T @ y_mid_x
 
