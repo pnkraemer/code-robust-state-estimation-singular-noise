@@ -158,18 +158,30 @@ def test_kalman_filter(impl):
         y1, reduced, (x_mid_x2, pdf2) = model_reduce(d, z=z, prepared=prepared)
         (z, x2_mid_z, y1_mid_x2) = reduced
 
-        # Run a single filter-condition step
+        # Run a single filter-condition step.
+        #
+        # To turn this into a smoother,
+        # run rv_condition() instead of rv_marginal
+        # which (due to some absorbing-logic)
+        # yields a x2-to-x2 conditional (small)
+        # instead of a x-to-x conditional (larger)
+        # todo: make this logic a bit simpler
         x2 = impl.rv_marginal(z, x2_mid_z)
         y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
         x2 = impl.trafo_evaluate(y1, bwd)
         pdf1 = impl.rv_logpdf(y1, y1_marg)
 
-        # Get the next 'z' to restart
-        z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
+        # Get the next 'z' to restart.
+        # Note how we don't parametrise z with a marginal distribution
+        # but by combining p(x2) and p(x | x2). Why? Because
+        # this way, we can keep all conditionals in "x2-space"
+        # and never do marginalisation or smoothing arithmetic in "x-space"
+        z = (x2, x_mid_x2)
 
+        xx = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
         logpdf_reduced += pdf1 + pdf2
-        means.append(z.mean)
-        covs.append(z.cov_dense())
+        means.append(xx.mean)
+        covs.append(xx.cov_dense())
 
     assert jnp.allclose(logpdf_reduced, logpdf_ref)
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
