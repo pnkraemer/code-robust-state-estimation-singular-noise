@@ -35,10 +35,11 @@ class SplitTrafo(Generic[T]):
 
 
 @dataclasses.dataclass
-class Impl[T]:
+class Impl(Generic[T]):
     rv_from_cholesky: Callable[[jax.Array, jax.Array], T]
     rv_condition: Callable[[T, Trafo[T]], tuple[T, Trafo[T]]]
     rv_marginal: Callable[[T, Trafo[T]], T]
+    rv_logpdf: Callable[[jax.Array, T], jax.Array]
 
     trafo_factorise: Callable[[Trafo[T]], tuple[Trafo[T], SplitTrafo[T]]]
     trafo_combine: Callable[[Trafo[T], Trafo[T]], Trafo[T]]
@@ -46,6 +47,7 @@ class Impl[T]:
 
     split_trafo_fix_x1: Callable[[jax.Array, SplitTrafo[T]], Trafo[T]]
     get_F: Callable
+
 
 def impl_cholesky_based() -> Impl:
     @jax.tree_util.register_dataclass
@@ -142,8 +144,23 @@ def impl_cholesky_based() -> Impl:
         # ~R_{X \mid Y}
         R_XY = R[d_out:, d_out:]
         return R_Y, (R_XY, G)
+
     def get_F(trafo, F_rank):
         return trafo.noise.cholesky
+
+    def rv_logpdf(u, /, rv, cholesky_is_triangular=True):
+        # The Cholesky factor is triangular, so we compute a cheap slogdet.
+        assert cholesky_is_triangular
+
+        diagonal = jnp.diagonal(rv.cholesky, axis1=-1, axis2=-2)
+        slogdet = jnp.sum(jnp.log(jnp.abs(diagonal)))
+
+        dx = u - rv.mean
+        residual_white = jax.scipy.linalg.solve_triangular(rv.cholesky.T, dx, trans="T")
+        x1 = jnp.dot(residual_white, residual_white)
+        x2 = 2.0 * slogdet
+        x3 = u.size * jnp.log(jnp.pi * 2)
+        return -0.5 * (x1 + x2 + x3)
 
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
@@ -153,7 +170,8 @@ def impl_cholesky_based() -> Impl:
         trafo_combine=trafo_combine,
         trafo_evaluate=trafo_evaluate,
         split_trafo_fix_x1=split_trafo_fix_x1,
-        get_F=get_F
+        get_F=get_F,
+        rv_logpdf=rv_logpdf,
     )
 
 
@@ -234,6 +252,9 @@ def impl_cov_based() -> Impl:
         vecs = eigh.eigenvectors[:, i]
         return vecs @ jnp.diag(jnp.sqrt(vals))
 
+    def rv_logpdf(y, rv):
+        logpdf = jax.scipy.stats.multivariate_normal.logpdf
+        return logpdf(y, rv.mean, rv.cov)
 
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
@@ -243,7 +264,8 @@ def impl_cov_based() -> Impl:
         trafo_combine=trafo_combine,
         trafo_evaluate=trafo_evaluate,
         split_trafo_fix_x1=split_trafo_fix_x1,
-        get_F=get_F
+        get_F=get_F,
+        rv_logpdf=rv_logpdf,
     )
 
 
@@ -303,10 +325,7 @@ def model_reduction(F_rank, impl):
         info = (info_transform_back, info_identify_constraint, info_split_data)
         return reduced_model, info
 
-
     def model_reduced_apply(y: jax.Array, *, z, reduced):
-        # todo: make the rank of F an argument somewhere
-        # todo: make all solves into solve_triangular etc.
         # todo: marginal likelihood
         # todo: test that cov-based and chol-based yield the same values (by testing that all marginal likelihood configs are identical?)
 
@@ -330,14 +349,19 @@ def model_reduction(F_rank, impl):
         x_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=x_mid_x1_and_x2)
 
         # Fix y2 in the "prior" distribution
-        _y2, z_mid_y2 = impl.rv_condition(prior=z, trafo=y2_mid_z)
+        y2_marg, z_mid_y2 = impl.rv_condition(prior=z, trafo=y2_mid_z)
         z = impl.trafo_evaluate(y2, trafo=z_mid_y2)
 
         # Now we have z, x2_mid_z, and y1_mid_x2
         # which is a "complete model" (just smaller than the previous one)
         # and we can run the usual estimation
         x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
-        _y1, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
+        y1_marg, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
         x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
-        return x2_mid_y1, x_mid_x2
+
+        pdf2 = impl.rv_logpdf(y2, y2_marg)
+        pdf1 = impl.rv_logpdf(y1, y1_marg)
+        logpdf = pdf1 + pdf2
+        return x2_mid_y1, x_mid_x2, logpdf
+
     return model_reduce, model_reduced_apply

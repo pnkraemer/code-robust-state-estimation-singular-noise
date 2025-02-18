@@ -14,6 +14,7 @@ class DimCfg(NamedTuple):
     y_sing: int
     y_nonsing: int
 
+
 def model_interpolation(impl):
     m0 = jnp.zeros((2,))
     c0 = jnp.eye(2)

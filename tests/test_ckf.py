@@ -39,7 +39,7 @@ def test_model_reduce_shapes(impl, dim):
 
     model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
     reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2 = model_apply(y, z=z, reduced=reduced)
+    x2_mid_data, x_mid_x2, _logpdf = model_apply(y, z=z, reduced=reduced)
 
     x2_dim = dim.x - dim.y_sing
     assert x2_mid_data.mean.shape == (x2_dim,)
@@ -59,13 +59,47 @@ def test_model_reduce_values(dim, impl):
     # Reduced model:
     model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
     reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2 = model_apply(y, z=z, reduced=reduced)
+    x2_mid_data, x_mid_x2, _logpdf = model_apply(y, z=z, reduced=reduced)
 
     x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
     tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
 
+
+@pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
+@pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
+def test_model_reduce_logpdf(dim, impl):
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+
+    # Reference:
+    ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
+    y_marg, ref_backward = impl.rv_condition(prior=ref_x, trafo=y_mid_x)
+    logpdf1 = impl.rv_logpdf(y, y_marg)
+
+    # Reduced model:
+    model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    x2_mid_data, x_mid_x2, logpdf2 = model_apply(y, z=z, reduced=reduced)
+
+    assert jnp.allclose(logpdf1, logpdf2)
+
+
+@pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
+def test_logpdfs_consistent_across_impls(dim):
+    impl = ckf.impl_cov_based()
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
+    y_marg, ref_backward = impl.rv_condition(prior=ref_x, trafo=y_mid_x)
+    logpdf1 = impl.rv_logpdf(y, y_marg)
+
+    impl = ckf.impl_cholesky_based()
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
+    y_marg, ref_backward = impl.rv_condition(prior=ref_x, trafo=y_mid_x)
+    logpdf2 = impl.rv_logpdf(y, y_marg)
+
+    assert jnp.allclose(logpdf1, logpdf2)
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
@@ -80,9 +114,10 @@ def test_kalman_filter(impl):
 
     for d in data_out:
         x = impl.rv_marginal(prior=x, trafo=x_mid_z)
-        _, x = impl.rv_condition(prior=x, trafo=y_mid_x)
-
+        y, x = impl.rv_condition(prior=x, trafo=y_mid_x)
         x = impl.trafo_evaluate(jnp.atleast_1d(d), trafo=x)
+        logpdf = impl.rv_logpdf(jnp.atleast_1d(d), y)
+
         means.append(x.mean)
         covs.append(x.cov_dense())
 
@@ -94,17 +129,14 @@ def test_kalman_filter(impl):
 
     model_reduce, model_apply = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
 
-
     for d in data_out:
         d = jnp.atleast_1d(d)
         reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-        x2, x_mid_x2 = model_apply(d, z=z, reduced=reduced)
+        x2, x_mid_x2, logpdf = model_apply(d, z=z, reduced=reduced)
         z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
-
         means.append(z.mean)
         covs.append(z.cov_dense())
 
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
     assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0.0, atol=1e-5)
-
