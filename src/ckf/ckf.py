@@ -318,7 +318,8 @@ def model_reduced_apply(y: jax.Array, *, z, reduced, impl):
     z = impl.trafo_evaluate(y2, trafo=z_mid_y2)
 
     # Now we have z, x2_mid_z, and y1_mid_x2
-    # which is a "complete model" and we can run the usual estimation
+    # which is a "complete model" (just smaller than the previous one)
+    # and we can run the usual estimation
     x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
     _y1, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
     x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
