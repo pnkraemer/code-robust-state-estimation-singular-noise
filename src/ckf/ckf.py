@@ -89,44 +89,61 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F):
     _, ndim = F.shape
     V, R = jnp.linalg.qr(F, mode="complete")
     V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
-    R1, zeros = jnp.split(R, indices_or_sections=[ndim], axis=0)
     y1_mid_x = V1.T @ y_mid_x
     y2_mid_x = V2.T @ y_mid_x
 
     # Second QR iteration
     W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
     W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
-    y2_mid_x1, y2_mid_x2 = y2_mid_x @ W1, y2_mid_x @ W2
 
-
+    # Factorise the z-to-x conditional
     x1_and_x2_mid_z = W.T @ x_mid_z
     x1_mid_z, x2_mid_x1_and_z = factorise_conditional(x1_and_x2_mid_z, len(V2.T))
 
+    # y2 | x1 is deterministic (and y2 is independent of x2 given x1)
+    y2_mid_x1 = y2_mid_x @ W1  # deterministic (ie zero cov)
+
+    # y1 now depends on both x1 and x2; we implement this as a "split' conditional"
     y1_mid_x1_and_x2 = split_conditional(y1_mid_x @ W, len(V2.T))
+
+    # We need to memorise how to turn x1/x2 back into x
     x_mid_x1_and_x2 = split_conditional(Trafo(W, 0., 0.), len(V2.T))
 
+    # We only care about y2 | z, not about x1 | z
     y2_mid_z = combine(outer=y2_mid_x1, inner=x1_mid_z)
-    return (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2), (x_mid_x1_and_x2, y2_mid_x1), (V1, V2)
+
+    # Return values:
+    reduced_model = (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2)
+    info_transform_back = x_mid_x1_and_x2
+    info_identify_constraint = y2_mid_x1
+    info_split_data = (V1, V2)
+    return reduced_model, info_transform_back, info_identify_constraint, info_split_data
+
 
 def model_reduced_apply(y: jax.Array, *, z, reduced):
-    (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2), (x_mid_x1_and_x2, y2_mid_x1), (V1, V2) = reduced
+    # Read off prepared values
+    reduced_model, info_transform_back, info_identify_constraint, info_split_data = reduced
+    (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2) = reduced_model
+    x_mid_x1_and_x2 = info_transform_back
+    y2_mid_x1 = info_identify_constraint
+    (V1, V2) = info_split_data
 
-    # Prepare data
+
+    # Split the data data
     y1, y2 = V1.T @ y, V2.T @ y
 
-    # Get x1
+    # Fix y2 (via x1) in remaining conditionals
     x1_value = condition_deterministic(y2, y2_mid_x1)
-
-    # Set x1
     x2_mid_z = fix_x1(x1_value, x2_mid_x1_and_z)
     y1_mid_x2 = fix_x1(x1_value, y1_mid_x1_and_x2)
     x_mid_x2 = fix_x1(x1_value, x_mid_x1_and_x2)
 
-    # Get z_mid_y2
+    # Fix y2 in the "prior" distribution
     _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
     z = evaluate_conditional(y2, trafo=z_mid_y2)
 
-    # Now we have z, x2_mid_z, y1_mid_x2 which is a "complete model"
+    # Now we have z, x2_mid_z, and y1_mid_x2
+    # which is a "complete model" and we can run the usual estimation
     x2 = marginal(prior=z, trafo=x2_mid_z)
     _y1, backward = condition(prior=x2, trafo=y1_mid_x2)
     x2_mid_y1 = evaluate_conditional(y1, trafo=backward)
