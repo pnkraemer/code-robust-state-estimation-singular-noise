@@ -87,7 +87,7 @@ def impl_cholesky_based() -> Impl:
         R = jnp.linalg.qr(mtrx, mode="r")
         return RandVar(mean, R.T)
 
-    def trafo_factorise(*, trafo, index):
+    def trafo_factorise(trafo, index):
         R = jnp.linalg.qr(trafo.noise.cholesky.T, mode="r")
         R1 = R[:index, :index]
         R12 = R[:index, index:]
@@ -103,7 +103,7 @@ def impl_cholesky_based() -> Impl:
         x1_mid_x2_and_z = SplitTrafo(G, linop2 - G @ linop1, noise)
         return x1_mid_z, x1_mid_x2_and_z
 
-    def trafo_combine(*, outer, inner):
+    def trafo_combine(outer, inner):
         linop = outer.linop @ inner.linop
         bias = outer.linop @ inner.noise.mean + outer.noise.mean
 
@@ -114,17 +114,17 @@ def impl_cholesky_based() -> Impl:
         R = jnp.linalg.qr(mtrx, mode="r")
         return Trafo(linop, RandVar(bias, R.T))
 
-    def trafo_evaluate(x, /, *, trafo):
+    def trafo_evaluate(x, /, trafo):
         return RandVar(trafo.linop @ x + trafo.noise.mean, trafo.noise.cholesky)
 
-    def split_trafo_fix_x1(x1, *, split_trafo):
+    def split_trafo_fix_x1(x1, split_trafo):
         trafo = Trafo(split_trafo.linop1, split_trafo.noise)
         noise = trafo_evaluate(x1, trafo=trafo)
 
         linop = split_trafo.linop2
         return Trafo(linop, noise)
 
-    def _revert_conditional(*, R_X_F: jax.Array, R_X: jax.Array, R_YX: jax.Array):
+    def _revert_conditional(R_X_F: jax.Array, R_X: jax.Array, R_YX: jax.Array):
         # Taken from:
         # https://github.com/pnkraemer/probdiffeq/blob/main/probdiffeq/util/cholesky_util.py
 
@@ -194,7 +194,7 @@ def impl_cov_based() -> Impl:
     def rv_from_cholesky(m, c):
         return RandVar(m, c @ c.T)
 
-    def trafo_factorise(*, trafo: Trafo, index: int) -> tuple[Trafo, SplitTrafo]:
+    def trafo_factorise(trafo: Trafo, index: int) -> tuple[Trafo, SplitTrafo]:
         cov1, cov2 = jnp.split(trafo.noise.cov, indices_or_sections=[index], axis=0)
         C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
         C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
@@ -211,17 +211,17 @@ def impl_cov_based() -> Impl:
         )
         return x1_mid_z, x1_mid_x2_and_z
 
-    def trafo_combine(*, outer: Trafo[T], inner: Trafo[T]) -> Trafo[T]:
+    def trafo_combine(outer: Trafo[T], inner: Trafo[T]) -> Trafo[T]:
         linop = outer.linop @ inner.linop
         bias = outer.linop @ inner.noise.mean + outer.noise.mean
         cov = outer.linop @ inner.noise.cov @ outer.linop.T + outer.noise.cov
         return Trafo(linop, RandVar(bias, cov))
 
-    def trafo_evaluate(data, *, trafo: Trafo[T]) -> T:
+    def trafo_evaluate(data, trafo: Trafo[T]) -> T:
         mean = trafo.linop @ data + trafo.noise.mean
         return RandVar(mean=mean, cov=trafo.noise.cov)
 
-    def rv_condition(*, prior: T, trafo: Trafo):
+    def rv_condition(prior: T, trafo: Trafo):
         z = trafo.linop @ prior.mean + trafo.noise.mean
         S = trafo.linop @ prior.cov @ trafo.linop.T + trafo.noise.cov
         marg = RandVar(z, S)
@@ -232,12 +232,12 @@ def impl_cov_based() -> Impl:
         cond = Trafo(linop=K, noise=RandVar(mean=m, cov=C))
         return marg, cond
 
-    def rv_marginal(*, prior: T, trafo: Trafo) -> T:
+    def rv_marginal(prior: T, trafo: Trafo) -> T:
         m = trafo.linop @ prior.mean + trafo.noise.mean
         C = trafo.linop @ prior.cov @ trafo.linop.T + trafo.noise.cov
         return RandVar(m, C)
 
-    def split_trafo_fix_x1(x1: jax.Array, /, *, split_trafo):
+    def split_trafo_fix_x1(x1: jax.Array, /, split_trafo):
         trafo = Trafo(split_trafo.linop1, split_trafo.noise)
         noise = trafo_evaluate(x1, trafo=trafo)
 
@@ -269,19 +269,22 @@ def impl_cov_based() -> Impl:
     )
 
 
-def trafo_split(*, trafo: Trafo, index: int) -> SplitTrafo:
+def trafo_split(trafo: Trafo, index: int) -> SplitTrafo:
     linop1, linop2 = jnp.split(trafo.linop, indices_or_sections=[index], axis=1)
     return SplitTrafo(linop1, linop2, trafo.noise)
 
 
-def trafo_invert_dirac(y: jax.Array, /, *, dirac_trafo) -> jax.Array:
+def trafo_invert_dirac(y: jax.Array, /, dirac_trafo) -> jax.Array:
     A = dirac_trafo.linop
     b = y - dirac_trafo.noise.mean
     return jnp.linalg.solve(A, b)
 
 
 def model_reduction(F_rank, impl):
-    def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo):
+    # todo: how do we best implement smoothing?
+    # ideally, the z_mid_x2 conditional and the x_mid_z conditional
+    # are combined before the smoothing iteration?
+    def model_prepare(y_mid_x: Trafo, x_mid_z: Trafo):
         # Extract F
         F = impl.get_F(y_mid_x, F_rank=F_rank)
 
@@ -325,11 +328,11 @@ def model_reduction(F_rank, impl):
         info = (info_transform_back, info_identify_constraint, info_split_data)
         return reduced_model, info
 
-    def model_reduced_apply(y: jax.Array, *, z, reduced):
+    def model_reduce(y: jax.Array, z, prepared):
         # Read off prepared values
-        reduced_model, info = reduced
+        prepared_models, info = prepared
         (info_transform_back, info_identify_constraint, info_split_data) = info
-        (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2) = reduced_model
+        (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2) = prepared_models
         x_mid_x1_and_x2 = info_transform_back
         y2_mid_x1 = info_identify_constraint
         (V1, V2) = info_split_data
@@ -348,17 +351,19 @@ def model_reduction(F_rank, impl):
         # Fix y2 in the "prior" distribution
         y2_marg, z_mid_y2 = impl.rv_condition(prior=z, trafo=y2_mid_z)
         z = impl.trafo_evaluate(y2, trafo=z_mid_y2)
+        logpdf_y2 = impl.rv_logpdf(y2, y2_marg)
 
         # Now we have z, x2_mid_z, and y1_mid_x2
         # which is a "complete model" (just smaller than the previous one)
-        # and we can run the usual estimation
-        x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
-        y1_marg, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
-        x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
+        # and we can run the usual estimation (eg Kalman filter)
+        return y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, logpdf_y2)
 
-        pdf2 = impl.rv_logpdf(y2, y2_marg)
-        pdf1 = impl.rv_logpdf(y1, y1_marg)
-        logpdf = pdf1 + pdf2
-        return x2_mid_y1, x_mid_x2, logpdf
+    # def model_filter(y1,  z, x2_mid_z, y1_mid_x2):
+    #     x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
+    #     y1_marg, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
+    #     x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
+    #
+    #     logpdf_y1 = impl.rv_logpdf(y1, y1_marg)
+    #     return x2_mid_y1, logpdf_y1
 
-    return model_reduce, model_reduced_apply
+    return model_prepare, model_reduce

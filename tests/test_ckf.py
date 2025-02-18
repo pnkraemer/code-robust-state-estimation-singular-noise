@@ -37,10 +37,16 @@ def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
 def test_model_reduce_shapes(impl, dim):
     (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
-    model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
-    reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2, _logpdf = model_apply(y, z=z, reduced=reduced)
+    model_prepare, model_reduce = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    y1, (z, x2_mid_z, y1_mid_x2), info = model_reduce(y, z=z, prepared=prepared)
 
+    # Run a single filter-condition step
+    x2 = impl.rv_marginal(z, x2_mid_z)
+    _, bwd = impl.rv_condition(x2, y1_mid_x2)
+    x2_mid_data = impl.trafo_evaluate(y1, bwd)
+
+    # Assert the shapes are as expected
     x2_dim = dim.x - dim.y_sing
     assert x2_mid_data.mean.shape == (x2_dim,)
     assert x2_mid_data.cov_dense().shape == (x2_dim, x2_dim)
@@ -57,13 +63,19 @@ def test_model_reduce_values(dim, impl):
     ref_x_mid_y = impl.trafo_evaluate(y, trafo=ref_backward)
 
     # Reduced model:
-    model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
-    reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2, _logpdf = model_apply(y, z=z, reduced=reduced)
+    model_prepare, model_reduce = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, _) = model_reduce(
+        y, z=z, prepared=prepared
+    )
 
-    x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
+    # Run a single filter-condition step
+    x2 = impl.rv_marginal(z, x2_mid_z)
+    _, bwd = impl.rv_condition(x2, y1_mid_x2)
+    x2_mid_data = impl.trafo_evaluate(y1, bwd)
 
     tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
+    x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
 
 
@@ -78,9 +90,17 @@ def test_model_reduce_logpdf(dim, impl):
     logpdf1 = impl.rv_logpdf(y, y_marg)
 
     # Reduced model:
-    model_reduce, model_apply = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
-    reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    x2_mid_data, x_mid_x2, logpdf2 = model_apply(y, z=z, reduced=reduced)
+    model_prepare, model_reduce = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, pdf2) = model_reduce(
+        y, z=z, prepared=prepared
+    )
+
+    # Run a single filter-condition step
+    x2 = impl.rv_marginal(z, x2_mid_z)
+    y1_marg, _bwd = impl.rv_condition(x2, y1_mid_x2)
+    pdf1 = impl.rv_logpdf(y1, y1_marg)
+    logpdf2 = pdf1 + pdf2
 
     assert jnp.allclose(logpdf1, logpdf2)
 
@@ -112,7 +132,7 @@ def test_kalman_filter(impl):
     means, covs = [], []
     x = z
 
-    logpdf_ref = 0.
+    logpdf_ref = 0.0
     for d in data_out:
         x = impl.rv_marginal(prior=x, trafo=x_mid_z)
         y, x = impl.rv_condition(prior=x, trafo=y_mid_x)
@@ -128,15 +148,26 @@ def test_kalman_filter(impl):
 
     means, covs = [], []
 
-    model_reduce, model_apply = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
-    logpdf_reduced = 0.
+    model_prepare, model_reduce = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
+
+    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+
+    logpdf_reduced = 0.0
     for d in data_out:
         d = jnp.atleast_1d(d)
-        reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-        x2, x_mid_x2, logpdf = model_apply(d, z=z, reduced=reduced)
+        y1, reduced, (x_mid_x2, pdf2) = model_reduce(d, z=z, prepared=prepared)
+        (z, x2_mid_z, y1_mid_x2) = reduced
+
+        # Run a single filter-condition step
+        x2 = impl.rv_marginal(z, x2_mid_z)
+        y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
+        x2 = impl.trafo_evaluate(y1, bwd)
+        pdf1 = impl.rv_logpdf(y1, y1_marg)
+
+        # Get the next 'z' to restart
         z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
 
-        logpdf_reduced += logpdf
+        logpdf_reduced += pdf1 + pdf2
         means.append(z.mean)
         covs.append(z.cov_dense())
 
