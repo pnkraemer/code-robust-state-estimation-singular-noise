@@ -47,7 +47,7 @@ class Trafo:
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
-class TrafoDuo:
+class SplitTrafo:
     linop1: jax.Array
     linop2: jax.Array
     bias: jax.Array
@@ -98,18 +98,19 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F):
 
     # Factorise the z-to-x conditional
     x1_and_x2_mid_z = W.T @ x_mid_z
-    x1_mid_z, x2_mid_x1_and_z = factorise_conditional(x1_and_x2_mid_z, len(V2.T))
+    x1_mid_z, x2_mid_x1_and_z = trafo_factorise(trafo=x1_and_x2_mid_z, index=len(V2.T))
 
-    # y2 | x1 is deterministic (and y2 is independent of x2 given x1)
-    y2_mid_x1 = y2_mid_x @ W1  # deterministic (ie zero cov)
+    # y2 | x1 is deterministic (ie zero cov) and y2 is independent of x2 given x1
+    y2_mid_x1 = y2_mid_x @ W1
 
-    # y1 now depends on both x1 and x2; we implement this as a "split' conditional"
-    y1_mid_x1_and_x2 = split_conditional(y1_mid_x @ W, len(V2.T))
+    # y1 now depends on both x1 and x2; we implement this as a split' conditional,
+    #  which is a conditional with two linops
+    y1_mid_x1_and_x2 = trafo_split(trafo=(y1_mid_x @ W), index=len(V2.T))
 
     # We need to memorise how to turn x1/x2 back into x
-    x_mid_x1_and_x2 = split_conditional(Trafo(W, 0., 0.), len(V2.T))
+    x_mid_x1_and_x2 = trafo_split(trafo=Trafo(W, 0., 0.), index=len(V2.T))
 
-    # We only care about y2 | z, not about x1 | z
+    # We only care about y2 | z, not about x1 | z, so we combine transformations
     y2_mid_z = combine(outer=y2_mid_x1, inner=x1_mid_z)
 
     # Return values:
@@ -128,15 +129,16 @@ def model_reduced_apply(y: jax.Array, *, z, reduced):
     y2_mid_x1 = info_identify_constraint
     (V1, V2) = info_split_data
 
-
     # Split the data data
     y1, y2 = V1.T @ y, V2.T @ y
 
-    # Fix y2 (via x1) in remaining conditionals
-    x1_value = condition_deterministic(y2, y2_mid_x1)
-    x2_mid_z = fix_x1(x1_value, x2_mid_x1_and_z)
-    y1_mid_x2 = fix_x1(x1_value, y1_mid_x1_and_x2)
-    x_mid_x2 = fix_x1(x1_value, x_mid_x1_and_x2)
+    # Fix y2 (via x1) in remaining conditionals.
+    #  Recall that by construction of the QR decompositions,
+    #  y2_mid_x1 has zero covariance.
+    x1_value = invert_deterministic(y2, deterministic_trafo=y2_mid_x1)
+    x2_mid_z = fix_x1(x1_value, split_trafo=x2_mid_x1_and_z)
+    y1_mid_x2 = fix_x1(x1_value, split_trafo=y1_mid_x1_and_x2)
+    x_mid_x2 = fix_x1(x1_value, split_trafo=x_mid_x1_and_x2)
 
     # Fix y2 in the "prior" distribution
     _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
@@ -150,27 +152,27 @@ def model_reduced_apply(y: jax.Array, *, z, reduced):
     return x2_mid_y1, x_mid_x2
 
 
-def split_conditional(cond, index):
-    linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=1)
-    return TrafoDuo(linop1, linop2, cond.bias, cond.cov)
+def trafo_split(*, trafo: Trafo, index: int) -> SplitTrafo:
+    linop1, linop2 = jnp.split(trafo.linop, indices_or_sections=[index], axis=1)
+    return SplitTrafo(linop1, linop2, trafo.bias, trafo.cov)
 
-def factorise_conditional(cond, index):
-    cov1, cov2 = jnp.split(cond.cov, indices_or_sections=[index], axis=0)
+def trafo_factorise(*, trafo: Trafo, index: int) -> tuple[Trafo, SplitTrafo]:
+    cov1, cov2 = jnp.split(trafo.cov, indices_or_sections=[index], axis=0)
     C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
     C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
 
     G = C12 @ jnp.linalg.inv(C1)
     Z = C2 - G @ C1 @ G.T
 
-    bias1, bias2 = jnp.split(cond.bias, indices_or_sections=[index], axis=0)
-    linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=0)
+    bias1, bias2 = jnp.split(trafo.bias, indices_or_sections=[index], axis=0)
+    linop1, linop2 = jnp.split(trafo.linop, indices_or_sections=[index], axis=0)
 
     x1_mid_z = Trafo(linop1, bias1, C1)
-    x1_mid_x2_and_z = TrafoDuo(G, linop2 - G @ linop1, bias2 - G @ bias1, Z)
+    x1_mid_x2_and_z = SplitTrafo(G, linop2 - G @ linop1, bias2 - G @ bias1, Z)
     return x1_mid_z, x1_mid_x2_and_z
 
-def condition_deterministic(y, trafo):
-    return jnp.linalg.solve(trafo.linop, y - trafo.bias)
+def invert_deterministic(y: jax.Array, /, *, deterministic_trafo) -> jax.Array:
+    return jnp.linalg.solve(deterministic_trafo.linop, y - deterministic_trafo.bias)
 
-def fix_x1(x1, duo_trafo):
-    return Trafo(duo_trafo.linop2, duo_trafo.linop1 @ x1 + duo_trafo.bias, duo_trafo.cov)
+def fix_x1(x1: jax.Array, /, *, split_trafo):
+    return Trafo(split_trafo.linop2, split_trafo.linop1 @ x1 + split_trafo.bias, split_trafo.cov)
