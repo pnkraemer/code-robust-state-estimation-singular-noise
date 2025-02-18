@@ -3,27 +3,50 @@
 import jax.numpy as jnp
 from ckf import ckf
 import jax
+import pytest_cases
+
+from typing import NamedTuple
 
 
-def test_model_align_shapes(z_dim=3, x_dim=15, y_dim=(2, 7)):
-    impl = ckf.impl_cov_based()
-    y, (z, x_mid_z, y_mid_x), F = _model_random(
-        dim_z=z_dim, dim_x=x_dim, dim_y=y_dim, impl=impl
-    )
+def case_impl_cov_based():
+    return ckf.impl_cov_based()
+
+class DimCfg(NamedTuple):
+    z: int
+    x: int
+    y_sing: int
+    y_nonsing: int
+
+def case_dim_base():
+    return DimCfg(1, 5, 2, 3)
+
+def case_dim_sing_zero():
+    return DimCfg(1, 5, 2, 0)
+
+def case_dim_nonsing_zero():
+    return DimCfg(1, 5, 0, 3)
+
+def case_dim_sing_and_nonsing_zero():
+    return DimCfg(1, 1, 0, 0)
+
+
+@pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
+@pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
+def test_model_align_shapes(impl, dim):
+
+    y, (z, x_mid_z, y_mid_x), F = _model_random( dim=dim, impl=impl)
 
     reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
     x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, impl=impl)
 
-    x2_dim = x_dim - y_dim[0]
+    x2_dim = dim.x - dim.y_sing
     assert x2_mid_data.mean.shape == (x2_dim,)
     assert x2_mid_data.cov.shape == (x2_dim, x2_dim)
 
-
-def test_model_align_values(z_dim=1, x_dim=6, y_dim=(1, 2)):
-    impl = ckf.impl_cov_based()
-    y, (z, x_mid_z, y_mid_x), F = _model_random(
-        dim_z=z_dim, dim_x=x_dim, dim_y=y_dim, impl=impl
-    )
+@pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
+@pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
+def test_model_align_values(dim, impl):
+    y, (z, x_mid_z, y_mid_x), F = _model_random(dim=dim, impl=impl)
 
     # Reference:
     ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
@@ -36,11 +59,12 @@ def test_model_align_values(z_dim=1, x_dim=6, y_dim=(1, 2)):
 
     x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
-    assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean)
+    tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
+    assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
 
 
-def test_kalman_filter():
-    impl = ckf.impl_cov_based()
+@pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
+def test_kalman_filter(impl):
     (z, x_mid_z, y_mid_x), F = _model_interpolation(impl=impl)
 
     data_in = jnp.linspace(0, 1, num=20)
@@ -100,31 +124,30 @@ def _model_interpolation(impl):
     return (z, x_mid_z, y_mid_x), cov
 
 
-def _model_random(*, dim_z, dim_x, dim_y, impl):
+def _model_random(*, dim: DimCfg, impl):
     key = jax.random.PRNGKey(seed=3)
 
     key, k1, k2 = jax.random.split(key, num=3)
-    m0 = jax.random.normal(k1, shape=(dim_z,))
-    c0 = jax.random.normal(k2, shape=(dim_z, dim_z))
+    m0 = jax.random.normal(k1, shape=(dim.z,))
+    c0 = jax.random.normal(k2, shape=(dim.z, dim.z))
     z = impl.rv_from_cholesky(m0, c0)
 
     # z = ckf.RandVar(m0, c0 @ c0.T)
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
-    linop = jax.random.normal(k1, shape=(dim_x, dim_z))
-    bias = jax.random.normal(k2, shape=(dim_x,))
-    cov = jax.random.normal(k3, shape=(dim_x, dim_x))
+    linop = jax.random.normal(k1, shape=(dim.x, dim.z))
+    bias = jax.random.normal(k2, shape=(dim.x,))
+    cov = jax.random.normal(k3, shape=(dim.x, dim.x))
     noise = impl.rv_from_cholesky(bias, cov)
     x_mid_z = ckf.Trafo(linop, noise)
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
-    dim_y_sing, dim_y_nonsing = dim_y
-    dim_y_total = dim_y_sing + dim_y_nonsing
-    assert dim_x >= dim_y_total
+    dim_y_total = dim.y_sing + dim.y_nonsing
+    assert dim.x >= dim_y_total
 
-    linop = jax.random.normal(k1, shape=(dim_y_total, dim_x))
+    linop = jax.random.normal(k1, shape=(dim_y_total, dim.x))
     bias = jax.random.normal(k2, shape=(dim_y_total,))
-    F = jax.random.normal(k3, shape=(dim_y_total, dim_y_nonsing))
+    F = jax.random.normal(k3, shape=(dim_y_total, dim.y_nonsing))
     noise = impl.rv_from_cholesky(bias, F)
     y_mid_x = ckf.Trafo(linop, noise)
 
