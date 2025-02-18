@@ -112,11 +112,12 @@ def test_kalman_filter(impl):
     means, covs = [], []
     x = z
 
+    logpdf_ref = 0.
     for d in data_out:
         x = impl.rv_marginal(prior=x, trafo=x_mid_z)
         y, x = impl.rv_condition(prior=x, trafo=y_mid_x)
         x = impl.trafo_evaluate(jnp.atleast_1d(d), trafo=x)
-        logpdf = impl.rv_logpdf(jnp.atleast_1d(d), y)
+        logpdf_ref += impl.rv_logpdf(jnp.atleast_1d(d), y)
 
         means.append(x.mean)
         covs.append(x.cov_dense())
@@ -128,15 +129,18 @@ def test_kalman_filter(impl):
     means, covs = [], []
 
     model_reduce, model_apply = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
-
+    logpdf_reduced = 0.
     for d in data_out:
         d = jnp.atleast_1d(d)
         reduced = model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
         x2, x_mid_x2, logpdf = model_apply(d, z=z, reduced=reduced)
         z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
+
+        logpdf_reduced += logpdf
         means.append(z.mean)
         covs.append(z.cov_dense())
 
+    assert jnp.allclose(logpdf_reduced, logpdf_ref)
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
     assert jnp.allclose(jnp.stack(covs)[:, :, 0], 0.0, atol=1e-5)

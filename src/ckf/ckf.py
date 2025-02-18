@@ -326,9 +326,6 @@ def model_reduction(F_rank, impl):
         return reduced_model, info
 
     def model_reduced_apply(y: jax.Array, *, z, reduced):
-        # todo: marginal likelihood
-        # todo: test that cov-based and chol-based yield the same values (by testing that all marginal likelihood configs are identical?)
-
         # Read off prepared values
         reduced_model, info = reduced
         (info_transform_back, info_identify_constraint, info_split_data) = info
