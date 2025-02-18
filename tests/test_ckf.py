@@ -11,20 +11,30 @@ from typing import NamedTuple
 def case_impl_cov_based():
     return ckf.impl_cov_based()
 
+
+def case_impl_cholesky_based():
+    return ckf.impl_cholesky_based()
+
+
 class DimCfg(NamedTuple):
     z: int
     x: int
     y_sing: int
     y_nonsing: int
 
+# todo: test that cov-based and chol-based yield the same values
+
 def case_dim_base():
     return DimCfg(1, 5, 2, 3)
+
 
 def case_dim_sing_zero():
     return DimCfg(1, 5, 2, 0)
 
+
 def case_dim_nonsing_zero():
     return DimCfg(1, 5, 0, 3)
+
 
 def case_dim_sing_and_nonsing_zero():
     return DimCfg(1, 1, 0, 0)
@@ -33,15 +43,15 @@ def case_dim_sing_and_nonsing_zero():
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_align_shapes(impl, dim):
-
-    y, (z, x_mid_z, y_mid_x), F = _model_random( dim=dim, impl=impl)
+    y, (z, x_mid_z, y_mid_x), F = _model_random(dim=dim, impl=impl)
 
     reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
     x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, impl=impl)
 
     x2_dim = dim.x - dim.y_sing
     assert x2_mid_data.mean.shape == (x2_dim,)
-    assert x2_mid_data.cov.shape == (x2_dim, x2_dim)
+    assert x2_mid_data.cov_dense().shape == (x2_dim, x2_dim)
+
 
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
@@ -60,8 +70,9 @@ def test_model_align_values(dim, impl):
     x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
     tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
+    print(x_mid_data.mean)
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean, rtol=tol, atol=tol)
-
+    assert False
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_kalman_filter(impl):
@@ -79,7 +90,7 @@ def test_kalman_filter(impl):
 
         x = impl.trafo_evaluate(jnp.atleast_1d(d), trafo=x)
         means.append(x.mean)
-        covs.append(x.cov)
+        covs.append(x.cov_dense())
 
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)
@@ -97,7 +108,8 @@ def test_kalman_filter(impl):
         z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
 
         means.append(z.mean)
-        covs.append(z.cov)
+        covs.append(z.cov_dense())
+
 
     assert jnp.allclose(jnp.stack(means)[:, 0], data_out)
     assert jnp.allclose(jnp.stack(covs)[:, 0, :], 0.0, atol=1e-5)

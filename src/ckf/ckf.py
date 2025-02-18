@@ -11,6 +11,7 @@ T = TypeVar("T")
 @dataclasses.dataclass
 class Trafo(Generic[T]):
     """Affine transformation."""
+
     linop: jax.Array
     noise: T
 
@@ -27,6 +28,7 @@ class Trafo(Generic[T]):
 @dataclasses.dataclass
 class SplitTrafo(Generic[T]):
     """Affine transformation with a split' linear operator."""
+
     linop1: jax.Array
     linop2: jax.Array
     noise: T
@@ -45,6 +47,114 @@ class Impl[T]:
     split_trafo_fix_x1: Callable[[jax.Array, SplitTrafo[T]], Trafo[T]]
 
 
+def impl_cholesky_based() -> Impl:
+    @jax.tree_util.register_dataclass
+    @dataclasses.dataclass
+    class RandVar:
+        mean: jax.Array
+        cholesky: jax.Array
+
+        def __rmatmul__(self, other: jax.Array):
+            """Implement Array @ Trafo"""
+            mean = other @ self.mean
+            cholesky = other @ self.cholesky
+            return RandVar(mean, cholesky)
+
+        def cov_dense(self):
+            return self.cholesky @ self.cholesky.T
+
+    def rv_from_cholesky(m, c):
+        return RandVar(mean=m, cholesky=c)
+
+    def rv_condition(prior, trafo):
+        R_YX = trafo.noise.cholesky.T
+        R_X = prior.cholesky.T
+        R_X_F = prior.cholesky.T @ trafo.linop.T
+        R_y, (R_xy, G) = _revert_conditional(R_X_F=R_X_F, R_X=R_X, R_YX=R_YX)
+
+        s = trafo.linop @ prior.mean + trafo.noise.mean
+        mean_new = prior.mean - G @ s
+        return RandVar(s, R_y.T), Trafo(G, RandVar(mean_new, R_xy.T))
+
+    def rv_marginal(prior, trafo):
+        mean = trafo.linop @ prior.mean + trafo.noise.mean
+
+        mtrx = jnp.concatenate(
+            [prior.cholesky.T @ trafo.linop.T, trafo.noise.cholesky.T]
+        )
+        R = jnp.linalg.qr(mtrx, mode="r")
+        return RandVar(mean, R.T)
+
+    def trafo_factorise(*, trafo, index):
+        R = jnp.linalg.qr(trafo.noise.cholesky.T, mode="r")
+        R1 = R[:index, :index]
+        R12 = R[:index, index:]
+        R2 = R[index:, index:]
+        G = jax.scipy.linalg.solve_triangular(R1, R12, lower=False).T
+
+        bias1, bias2 = jnp.split(trafo.noise.mean, indices_or_sections=[index], axis=0)
+        linop1, linop2 = jnp.split(trafo.linop, indices_or_sections=[index], axis=0)
+
+        x1_mid_z = Trafo(linop1, RandVar(bias1, R1.T))
+
+        noise = RandVar(bias2 - G @ bias1, R2.T)
+        x1_mid_x2_and_z = SplitTrafo(G, linop2 - G @ linop1, noise)
+        return x1_mid_z, x1_mid_x2_and_z
+
+    def trafo_combine(*, outer, inner):
+        linop = outer.linop @ inner.linop
+        bias = outer.linop @ inner.noise.mean + outer.noise.mean
+
+        mtrx = jnp.concatenate(
+            [inner.noise.cholesky.T @ outer.linop.T, outer.noise.cholesky.T], axis=0
+        )
+
+        R = jnp.linalg.qr(mtrx, mode="r")
+        return Trafo(linop, RandVar(bias, R.T))
+
+    def trafo_evaluate(x, /, *, trafo):
+        return RandVar(trafo.linop @ x + trafo.noise.mean, trafo.noise.cholesky)
+
+    def split_trafo_fix_x1(x1, *, split_trafo):
+        trafo = Trafo(split_trafo.linop1, split_trafo.noise)
+        noise = trafo_evaluate(x1, trafo=trafo)
+
+        linop = split_trafo.linop2
+        return Trafo(linop, noise)
+
+    def _revert_conditional(*, R_X_F: jax.Array, R_X: jax.Array, R_YX: jax.Array):
+        # Taken from:
+        # https://github.com/pnkraemer/probdiffeq/blob/main/probdiffeq/util/cholesky_util.py
+
+        R = jnp.block([[R_YX, jnp.zeros((R_YX.shape[0], R_X.shape[1]))], [R_X_F, R_X]])
+        R = jnp.linalg.qr(R, mode="r")
+
+        # ~R_{Y}
+        d_out = R_YX.shape[1]
+        R_Y = R[:d_out, :d_out]
+
+        # something like the cross-covariance
+        R12 = R[:d_out, d_out:]
+
+        # Implements G = R12.T @ np.linalg.inv(R_Y.T) in clever:
+        # G = R12.T @ jnp.linalg.inv(R_Y.T)
+        G = jax.scipy.linalg.solve_triangular(R_Y, R12, lower=False).T
+
+        # ~R_{X \mid Y}
+        R_XY = R[d_out:, d_out:]
+        return R_Y, (R_XY, G)
+
+    return Impl(
+        rv_from_cholesky=rv_from_cholesky,
+        rv_condition=rv_condition,
+        rv_marginal=rv_marginal,
+        trafo_factorise=trafo_factorise,
+        trafo_combine=trafo_combine,
+        trafo_evaluate=trafo_evaluate,
+        split_trafo_fix_x1=split_trafo_fix_x1,
+    )
+
+
 def impl_cov_based() -> Impl:
     @jax.tree_util.register_dataclass
     @dataclasses.dataclass
@@ -57,6 +167,9 @@ def impl_cov_based() -> Impl:
             mean = other @ self.mean
             cov = other @ self.cov @ other.T
             return RandVar(mean, cov)
+
+        def cov_dense(self):
+            return self.cov
 
     def rv_from_cholesky(m, c):
         return RandVar(m, c @ c.T)
@@ -177,11 +290,7 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F, impl):
 
 
 def model_reduced_apply(y: jax.Array, *, z, reduced, impl):
-    # todo: isolate all covariance logic:
-    #  - separate covariance-affected computation from the other
-    #  - make the rank of F an argument somewhere
-    #  - test corner cases of fully constrained and unconstrained estimation
-    #  - square-root versions of everything
+    # todo: make the rank of F an argument somewhere
     # todo: marginal likelihood
 
     # Read off prepared values
