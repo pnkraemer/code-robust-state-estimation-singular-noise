@@ -31,12 +31,28 @@ class Trafo:
         small = jnp.finfo(cholesky.dtype).eps
         return cholesky[:, eigh.eigenvalues > small]
 
+    def __matmul__(self, other: jax.Array):
+        return Trafo(
+            linop=self.linop @ other,
+            bias=self.bias,
+            cov=self.cov,
+        )
+
     def __rmatmul__(self, other: jax.Array):
         return Trafo(
             linop=other @ self.linop,
             bias=other @ self.bias,
             cov=other @ self.cov @ other.T,
         )
+
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class TrafoDuo:
+    linop1: jax.Array
+    linop2: jax.Array
+    bias: jax.Array
+    cov: jax.Array
+
 
 
 def marginal(*, prior: RandVar, trafo: Trafo) -> RandVar:
@@ -74,63 +90,70 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F):
     V, R = jnp.linalg.qr(F, mode="complete")
     V1, V2 = jnp.split(V, indices_or_sections=[ndim], axis=1)
     R1, zeros = jnp.split(R, indices_or_sections=[ndim], axis=0)
-
-    # Second QR iteration
-    y2_mid_x = V2.T @ y_mid_x
-    W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
-    W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
-    S1, zeros = jnp.split(S, indices_or_sections=[len(V2.T)], axis=0)
-
-    # Parametrise x2_mid_x1
-    Q = x_mid_z.cov
-    C = y_mid_x.linop
-    x1_mid_z_raw = W1.T @ x_mid_z  # "raw" meaning without considering independence etc.
-    x2_mid_z_raw = W2.T @ x_mid_z
-    G = W2.T @ Q @ W1 @ jnp.linalg.inv(x1_mid_z_raw.cov)
-    Z = x2_mid_z_raw.cov - G @ x1_mid_z_raw.cov @ G.T
-
-    # Parametrise y2_mid_z
-    linop = S1 @ x1_mid_z_raw.linop
-    bias = S1 @ x1_mid_z_raw.bias + y2_mid_x.bias
-    cov = S1 @ W1.T @ x_mid_z.cov @ W1 @ S1.T
-    y2_mid_z = Trafo(linop, bias, cov)
-
-    linop = x2_mid_z_raw.linop - G @ x1_mid_z_raw.linop
-    bias = x2_mid_z_raw.bias - G @ x1_mid_z_raw.bias
-    cov = Z
-    x2_mid_z_no_x1 = Trafo(linop, bias, cov)
-
-    reduced = ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, y2_mid_z)
-    return reduced
-
-
-def model_reduced_apply(y: jax.Array, *, z, reduced):
-    ((V1, V2), (W1, W2), S1, R1, (G, Z), y_mid_x, x2_mid_z_no_x1, C, y2_mid_z) = reduced
-
-    # Split measurement model and data
     y1_mid_x = V1.T @ y_mid_x
     y2_mid_x = V2.T @ y_mid_x
 
-    y1, y2 = V1.T @ y, V2.T @ y
-    x1_value = jnp.linalg.solve(S1, y2 - y2_mid_x.bias)
+    # Second QR iteration
+    W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
+    W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
+    y2_mid_x1, y2_mid_x2 = y2_mid_x @ W1, y2_mid_x @ W2
 
-    # Condition z on y2
+
+    x1_and_x2_mid_z = W.T @ x_mid_z
+    x1_mid_z, x2_mid_x1_and_z = factorise_conditional(x1_and_x2_mid_z, len(V2.T))
+
+    y1_mid_x1_and_x2 = split_conditional(y1_mid_x @ W, len(V2.T))
+    x_mid_x1_and_x2 = split_conditional(Trafo(W, 0., 0.), len(V2.T))
+
+    y2_mid_z = combine(outer=y2_mid_x1, inner=x1_mid_z)
+    return (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2), (x_mid_x1_and_x2, y2_mid_x1), (V1, V2)
+
+def model_reduced_apply(y: jax.Array, *, z, reduced):
+    (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2), (x_mid_x1_and_x2, y2_mid_x1), (V1, V2) = reduced
+
+    # Prepare data
+    y1, y2 = V1.T @ y, V2.T @ y
+
+    # Get x1
+    x1_value = condition_deterministic(y2, y2_mid_x1)
+
+    # Set x1
+    x2_mid_z = fix_x1(x1_value, x2_mid_x1_and_z)
+    y1_mid_x2 = fix_x1(x1_value, y1_mid_x1_and_x2)
+    x_mid_x2 = fix_x1(x1_value, x_mid_x1_and_x2)
+
+    # Get z_mid_y2
     _y2, z_mid_y2 = condition(prior=z, trafo=y2_mid_z)
     z = evaluate_conditional(y2, trafo=z_mid_y2)
 
-    # Marginalise to the "next future" x2
-    x2_mid_z = Trafo(
-        x2_mid_z_no_x1.linop, x2_mid_z_no_x1.bias + G @ x1_value, x2_mid_z_no_x1.cov
-    )
+    # Now we have z, x2_mid_z, y1_mid_x2 which is a "complete model"
     x2 = marginal(prior=z, trafo=x2_mid_z)
-
-    # Condition x2 on y2
-    linop = V1.T @ C @ W2
-    bias = V1.T @ C @ W1 @ x1_value + y1_mid_x.bias
-    cov = R1 @ R1.T
-    y1_mid_x2 = Trafo(linop, bias, cov)
     _y1, backward = condition(prior=x2, trafo=y1_mid_x2)
     x2_mid_y1 = evaluate_conditional(y1, trafo=backward)
-
-    x_mid_x2 = Trafo(linop=W2, bias=W1 @ x1_value, cov=jnp.zeros((len(W1), len(W1))))
     return x2_mid_y1, x_mid_x2
+
+
+def split_conditional(cond, index):
+    linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=1)
+    return TrafoDuo(linop1, linop2, cond.bias, cond.cov)
+
+def factorise_conditional(cond, index):
+    cov1, cov2 = jnp.split(cond.cov, indices_or_sections=[index], axis=0)
+    C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
+    C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
+
+    G = C12 @ jnp.linalg.inv(C1)
+    Z = C2 - G @ C1 @ G.T
+
+    bias1, bias2 = jnp.split(cond.bias, indices_or_sections=[index], axis=0)
+    linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=0)
+
+    x1_mid_z = Trafo(linop1, bias1, C1)
+    x1_mid_x2_and_z = TrafoDuo(G, linop2 - G @ linop1, bias2 - G @ bias1, Z)
+    return x1_mid_z, x1_mid_x2_and_z
+
+def condition_deterministic(y, trafo):
+    return jnp.linalg.solve(trafo.linop, y - trafo.bias)
+
+def fix_x1(x1, duo_trafo):
+    return Trafo(duo_trafo.linop2, duo_trafo.linop1 @ x1 + duo_trafo.bias, duo_trafo.cov)
