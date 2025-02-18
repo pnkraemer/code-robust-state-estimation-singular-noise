@@ -99,12 +99,12 @@ def _model_interpolation():
     linop = jnp.eye(2)
     bias = jnp.zeros((2,))
     cov = jnp.eye(2)
-    x_mid_z = ckf.Trafo(linop, bias, cov)
+    x_mid_z = ckf.Trafo(linop, ckf.RandVar(bias, cov))
 
     linop = jnp.eye(1, 2)
     bias = jnp.zeros((1,))
     cov = jnp.zeros((1, 1))
-    y_mid_x = ckf.Trafo(linop, bias, cov)
+    y_mid_x = ckf.Trafo(linop, ckf.RandVar(bias, cov))
 
     return (z, x_mid_z, y_mid_x), cov
 
@@ -121,7 +121,7 @@ def _model_random(*, dim_z, dim_x, dim_y):
     linop = jax.random.normal(k1, shape=(dim_x, dim_z))
     bias = jax.random.normal(k2, shape=(dim_x,))
     cov = jax.random.normal(k3, shape=(dim_x, dim_x))
-    x_mid_z = ckf.Trafo(linop, bias, cov @ cov.T)
+    x_mid_z = ckf.Trafo(linop, ckf.RandVar(bias, cov @ cov.T))
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
     dim_y_sing, dim_y_nonsing = dim_y
@@ -131,7 +131,7 @@ def _model_random(*, dim_z, dim_x, dim_y):
     linop = jax.random.normal(k1, shape=(dim_y_total, dim_x))
     bias = jax.random.normal(k2, shape=(dim_y_total,))
     F = jax.random.normal(k3, shape=(dim_y_total, dim_y_nonsing))
-    y_mid_x = ckf.Trafo(linop, bias, F @ F.T)
+    y_mid_x = ckf.Trafo(linop, ckf.RandVar(bias, F @ F.T))
 
     data = jax.random.normal(key, shape=(dim_y_total,))
     return data, (z, x_mid_z, y_mid_x), F

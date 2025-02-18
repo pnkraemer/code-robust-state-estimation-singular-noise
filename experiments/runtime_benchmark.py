@@ -4,6 +4,7 @@ import jax
 
 import time
 
+
 # The higher-dimensional the problem, the more dimensionality-reduction yields
 def main(d=16):
     (z, x_mid_z, y_mid_x), F = _model_interpolation(d=d)
@@ -78,12 +79,12 @@ def _model_interpolation(d):
     linop = jnp.kron(jnp.eye(2), eye_d)
     bias = jnp.concatenate([jnp.zeros((2,))] * d, axis=0)
     cov = jnp.kron(jnp.eye(2), eye_d)
-    x_mid_z = ckf.Trafo(linop, bias, cov)
+    x_mid_z = ckf.Trafo(linop, ckf.RandVar(bias, cov))
 
     linop = jnp.kron(jnp.eye(2, 2), eye_d)
     bias = jnp.concatenate([jnp.zeros((2,))] * d, axis=0)
     cov = jnp.kron(jnp.zeros((2, 1)), eye_d)
-    y_mid_x = ckf.Trafo(linop, bias, cov @ cov.T)
+    y_mid_x = ckf.Trafo(linop, ckf.RandVar(bias, cov @ cov.T))
 
     return (z, x_mid_z, y_mid_x), cov
 
