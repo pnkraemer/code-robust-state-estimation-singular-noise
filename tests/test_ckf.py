@@ -26,15 +26,15 @@ def test_model_align_values(z_dim=1, x_dim=6, y_dim=(1, 2)):
     )
 
     # Reference:
-    ref_x = impl.marginal(prior=z, trafo=x_mid_z)
-    _y, ref_backward = impl.condition(prior=ref_x, trafo=y_mid_x)
-    ref_x_mid_y = impl.evaluate_conditional(y, trafo=ref_backward)
+    ref_x = impl.rv_marginal(prior=z, trafo=x_mid_z)
+    _y, ref_backward = impl.rv_condition(prior=ref_x, trafo=y_mid_x)
+    ref_x_mid_y = impl.trafo_evaluate(y, trafo=ref_backward)
 
     # Reduced model:
     reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
     x2_mid_data, x_mid_x2 = ckf.model_reduced_apply(y, z=z, reduced=reduced, impl=impl)
 
-    x_mid_data = impl.marginal(prior=x2_mid_data, trafo=x_mid_x2)
+    x_mid_data = impl.rv_marginal(prior=x2_mid_data, trafo=x_mid_x2)
 
     assert jnp.allclose(x_mid_data.mean, ref_x_mid_y.mean)
 
@@ -50,10 +50,10 @@ def test_kalman_filter():
     x = z
 
     for d in data_out:
-        x = impl.marginal(prior=x, trafo=x_mid_z)
-        _, x = impl.condition(prior=x, trafo=y_mid_x)
+        x = impl.rv_marginal(prior=x, trafo=x_mid_z)
+        _, x = impl.rv_condition(prior=x, trafo=y_mid_x)
 
-        x = impl.evaluate_conditional(jnp.atleast_1d(d), trafo=x)
+        x = impl.trafo_evaluate(jnp.atleast_1d(d), trafo=x)
         means.append(x.mean)
         covs.append(x.cov)
 
@@ -70,7 +70,7 @@ def test_kalman_filter():
         d = jnp.atleast_1d(d)
         reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F, impl=impl)
         x2, x_mid_x2 = ckf.model_reduced_apply(d, z=z, reduced=reduced, impl=impl)
-        z = impl.marginal(prior=x2, trafo=x_mid_x2)
+        z = impl.rv_marginal(prior=x2, trafo=x_mid_x2)
 
         means.append(z.mean)
         covs.append(z.cov)

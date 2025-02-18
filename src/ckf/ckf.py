@@ -7,17 +7,45 @@ from typing import Callable, Generic, TypeVar
 T = TypeVar("T")
 
 
+@jax.tree_util.register_dataclass
 @dataclasses.dataclass
-class Impl:
-    rv_from_cholesky: Callable
-    trafo_factorise: Callable
-    combine: Callable
-    evaluate_conditional: Callable
-    condition: Callable
-    marginal: Callable
+class Trafo(Generic[T]):
+    """Affine transformation."""
+    linop: jax.Array
+    noise: T
+
+    def __matmul__(self, other: jax.Array):
+        """Implement Trafo @ Array"""
+        return Trafo(linop=self.linop @ other, noise=self.noise)
+
+    def __rmatmul__(self, other: jax.Array):
+        """Implement Array @ Trafo"""
+        return Trafo(linop=other @ self.linop, noise=other @ self.noise)
 
 
-def impl_cov_based():
+@jax.tree_util.register_dataclass
+@dataclasses.dataclass
+class SplitTrafo(Generic[T]):
+    """Affine transformation with a split' linear operator."""
+    linop1: jax.Array
+    linop2: jax.Array
+    noise: T
+
+
+@dataclasses.dataclass
+class Impl[T]:
+    rv_from_cholesky: Callable[[jax.Array, jax.Array], T]
+    rv_condition: Callable[[T, Trafo[T]], tuple[T, Trafo[T]]]
+    rv_marginal: Callable[[T, Trafo[T]], T]
+
+    trafo_factorise: Callable[[Trafo[T]], tuple[Trafo[T], SplitTrafo[T]]]
+    trafo_combine: Callable[[Trafo[T], Trafo[T]], Trafo[T]]
+    trafo_evaluate: Callable[[jax.Array, Trafo[T]], T]
+
+    split_trafo_fix_x1: Callable[[jax.Array, SplitTrafo[T]], Trafo[T]]
+
+
+def impl_cov_based() -> Impl:
     @jax.tree_util.register_dataclass
     @dataclasses.dataclass
     class RandVar:
@@ -50,17 +78,17 @@ def impl_cov_based():
         )
         return x1_mid_z, x1_mid_x2_and_z
 
-    def combine(*, outer: Trafo[T], inner: Trafo[T]) -> Trafo[T]:
+    def trafo_combine(*, outer: Trafo[T], inner: Trafo[T]) -> Trafo[T]:
         linop = outer.linop @ inner.linop
         bias = outer.linop @ inner.noise.mean + outer.noise.mean
         cov = outer.linop @ inner.noise.cov @ outer.linop.T + outer.noise.cov
         return Trafo(linop, RandVar(bias, cov))
 
-    def evaluate_conditional(data, *, trafo: Trafo[T]) -> T:
+    def trafo_evaluate(data, *, trafo: Trafo[T]) -> T:
         mean = trafo.linop @ data + trafo.noise.mean
         return RandVar(mean=mean, cov=trafo.noise.cov)
 
-    def condition(*, prior: T, trafo: Trafo):
+    def rv_condition(*, prior: T, trafo: Trafo):
         z = trafo.linop @ prior.mean + trafo.noise.mean
         S = trafo.linop @ prior.cov @ trafo.linop.T + trafo.noise.cov
         marg = RandVar(z, S)
@@ -71,42 +99,27 @@ def impl_cov_based():
         cond = Trafo(linop=K, noise=RandVar(mean=m, cov=C))
         return marg, cond
 
-    def marginal(*, prior: T, trafo: Trafo) -> T:
+    def rv_marginal(*, prior: T, trafo: Trafo) -> T:
         m = trafo.linop @ prior.mean + trafo.noise.mean
         C = trafo.linop @ prior.cov @ trafo.linop.T + trafo.noise.cov
         return RandVar(m, C)
 
+    def split_trafo_fix_x1(x1: jax.Array, /, *, split_trafo):
+        trafo = Trafo(split_trafo.linop1, split_trafo.noise)
+        noise = trafo_evaluate(x1, trafo=trafo)
+
+        linop = split_trafo.linop2
+        return Trafo(linop, noise)
+
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
+        rv_condition=rv_condition,
+        rv_marginal=rv_marginal,
         trafo_factorise=trafo_factorise,
-        combine=combine,
-        evaluate_conditional=evaluate_conditional,
-        condition=condition,
-        marginal=marginal,
+        trafo_combine=trafo_combine,
+        trafo_evaluate=trafo_evaluate,
+        split_trafo_fix_x1=split_trafo_fix_x1,
     )
-
-
-@jax.tree_util.register_dataclass
-@dataclasses.dataclass
-class Trafo(Generic[T]):
-    linop: jax.Array
-    noise: T
-
-    def __matmul__(self, other: jax.Array):
-        """Implement Trafo @ Array"""
-        return Trafo(linop=self.linop @ other, noise=self.noise)
-
-    def __rmatmul__(self, other: jax.Array):
-        """Implement Array @ Trafo"""
-        return Trafo(linop=other @ self.linop, noise=other @ self.noise)
-
-
-@jax.tree_util.register_dataclass
-@dataclasses.dataclass
-class SplitTrafo(Generic[T]):
-    linop1: jax.Array
-    linop2: jax.Array
-    noise: T
 
 
 def trafo_split(*, trafo: Trafo, index: int) -> SplitTrafo:
@@ -114,18 +127,10 @@ def trafo_split(*, trafo: Trafo, index: int) -> SplitTrafo:
     return SplitTrafo(linop1, linop2, trafo.noise)
 
 
-def invert_deterministic(y: jax.Array, /, *, deterministic_trafo) -> jax.Array:
-    A = deterministic_trafo.linop
-    b = y - deterministic_trafo.noise.mean
+def trafo_invert_dirac(y: jax.Array, /, *, dirac_trafo) -> jax.Array:
+    A = dirac_trafo.linop
+    b = y - dirac_trafo.noise.mean
     return jnp.linalg.solve(A, b)
-
-
-def fix_x1(x1: jax.Array, /, *, split_trafo, impl):
-    linop = split_trafo.linop2
-
-    trafo = Trafo(split_trafo.linop1, split_trafo.noise)
-    noise = impl.evaluate_conditional(x1, trafo=trafo)
-    return Trafo(linop, noise)
 
 
 def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F, impl):
@@ -160,7 +165,7 @@ def model_reduce(*, y_mid_x: Trafo, x_mid_z: Trafo, F, impl):
     x_mid_x1_and_x2 = trafo_split(trafo=trafo, index=len(V2.T))
 
     # We only care about y2 | z, not about x1 | z, so we combine transformations
-    y2_mid_z = impl.combine(outer=y2_mid_x1, inner=x1_mid_z)
+    y2_mid_z = impl.trafo_combine(outer=y2_mid_x1, inner=x1_mid_z)
 
     # Return values:
     reduced_model = (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2)
@@ -193,18 +198,18 @@ def model_reduced_apply(y: jax.Array, *, z, reduced, impl):
     # Fix y2 (via x1) in remaining conditionals.
     #  Recall that by construction of the QR decompositions,
     #  y2_mid_x1 has zero covariance.
-    x1_value = invert_deterministic(y2, deterministic_trafo=y2_mid_x1)
-    x2_mid_z = fix_x1(x1_value, split_trafo=x2_mid_x1_and_z, impl=impl)
-    y1_mid_x2 = fix_x1(x1_value, split_trafo=y1_mid_x1_and_x2, impl=impl)
-    x_mid_x2 = fix_x1(x1_value, split_trafo=x_mid_x1_and_x2, impl=impl)
+    x1_value = trafo_invert_dirac(y2, dirac_trafo=y2_mid_x1)
+    x2_mid_z = impl.split_trafo_fix_x1(x1_value, split_trafo=x2_mid_x1_and_z)
+    y1_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=y1_mid_x1_and_x2)
+    x_mid_x2 = impl.split_trafo_fix_x1(x1_value, split_trafo=x_mid_x1_and_x2)
 
     # Fix y2 in the "prior" distribution
-    _y2, z_mid_y2 = impl.condition(prior=z, trafo=y2_mid_z)
-    z = impl.evaluate_conditional(y2, trafo=z_mid_y2)
+    _y2, z_mid_y2 = impl.rv_condition(prior=z, trafo=y2_mid_z)
+    z = impl.trafo_evaluate(y2, trafo=z_mid_y2)
 
     # Now we have z, x2_mid_z, and y1_mid_x2
     # which is a "complete model" and we can run the usual estimation
-    x2 = impl.marginal(prior=z, trafo=x2_mid_z)
-    _y1, backward = impl.condition(prior=x2, trafo=y1_mid_x2)
-    x2_mid_y1 = impl.evaluate_conditional(y1, trafo=backward)
+    x2 = impl.rv_marginal(prior=z, trafo=x2_mid_z)
+    _y1, backward = impl.rv_condition(prior=x2, trafo=y1_mid_x2)
+    x2_mid_y1 = impl.trafo_evaluate(y1, trafo=backward)
     return x2_mid_y1, x_mid_x2
