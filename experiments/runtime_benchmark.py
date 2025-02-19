@@ -1,92 +1,128 @@
 import jax.numpy as jnp
-from ckf import ckf
+from ckf import ckf, test_util
 import jax
 
 import time
 
 
-# The higher-dimensional the problem, the more dimensionality-reduction yields
-def main(d=16):
-    (z, x_mid_z, y_mid_x), F = _model_interpolation(d=d)
+def main(seed=1, num_data=1500):
+    for impl, impl_name in [
+        (ckf.impl_cov_based(), "Cov-based"),
+        (ckf.impl_cholesky_based(), "Cholesky-based"),
+    ]:
+        print()
+        print(impl_name)
+        key = jax.random.PRNGKey(seed)
+        key, subkey = jax.random.split(key, num=2)
+        dim = test_util.DimCfg(x=8, y_sing=8, y_nonsing=0)
+        (z, x_mid_z, y_mid_x), F, _y = test_util.model_random(
+            subkey, dim=dim, impl=impl
+        )
 
-    data_in = jnp.linspace(0, 1, num=10_000)
-    data_out = data_in + 0.1 + jnp.sin(data_in**2)
-    data_out = data_out[..., None] * jnp.ones((1, 2 * d))
+        # Assemble all Kalman filters
 
-    run_traditional(data_out, z, x_mid_z, y_mid_x, num_runs=3)
-    run_constrained(data_out, z, x_mid_z, y_mid_x, F, num_runs=3)
+        filter_conv = _filter_conventional(
+            impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x
+        )
+        filter_redu = _filter_reduced(
+            impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x, F_rank=F.shape[1]
+        )
 
+        for alg, name in [(filter_conv, "Conventional"), (filter_redu, "Reduced")]:
+            alg = jax.jit(alg)
 
-def run_traditional(data_out, z, x_mid_z, y_mid_x, *, num_runs):
-    def step(x, data):
-        x = ckf.marginal(prior=x, trafo=x_mid_z)
-        _, x = ckf.condition(prior=x, trafo=y_mid_x)
+            key, subkey = jax.random.split(key, num=2)
+            data_out = jax.random.normal(
+                subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
+            )
 
-        x = ckf.evaluate_conditional(jnp.atleast_1d(data), trafo=x)
-        return x, (x.mean, x.cov)
+            x0, xs, pdf = alg(data_out)
+            x0.mean.block_until_ready()
+            xs.mean.block_until_ready()
+            if impl_name == "Cov-based":
+                x0.cov.block_until_ready()
+                xs.cov.block_until_ready()
+            else:
+                x0.cholesky.block_until_ready()
+                xs.cholesky.block_until_ready()
+            ts = []
+            for _ in range(10):
+                key, subkey = jax.random.split(key, num=2)
+                data_out = jax.random.normal(
+                    subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
+                )
 
-    _, (means, covs) = jax.lax.scan(step, xs=data_out, init=z)
-    means.block_until_ready()
-    covs.block_until_ready()
-
-    best_yet = 1000
-    for _ in range(num_runs):
-        t0 = time.perf_counter()
-        _, (means, covs) = jax.lax.scan(step, xs=data_out, init=z)
-        means.block_until_ready()
-        covs.block_until_ready()
-        t1 = time.perf_counter()
-        if t1 - t0 < best_yet:
-            best_yet = t1 - t0
-
-    print(best_yet)
-
-
-def run_constrained(data_out, z, x_mid_z, y_mid_x, F, *, num_runs):
-    reduced = ckf.model_reduce(y_mid_x=y_mid_x, x_mid_z=x_mid_z, F=F)
-
-    def step(x, data):
-        data = jnp.atleast_1d(data)
-
-        x2, x_mid_x2 = ckf.model_reduced_apply(data, z=x, reduced=reduced)
-        x = ckf.marginal(prior=x2, trafo=x_mid_x2)
-        return x, (x.mean, x.cov)
-
-    _, (means, covs) = jax.lax.scan(step, xs=data_out, init=z)
-    means.block_until_ready()
-    covs.block_until_ready()
-
-    best_yet = 1000
-    for _ in range(num_runs):
-        t0 = time.perf_counter()
-        _, (means, covs) = jax.lax.scan(step, xs=data_out, init=z)
-        means.block_until_ready()
-        covs.block_until_ready()
-        t1 = time.perf_counter()
-        if t1 - t0 < best_yet:
-            best_yet = t1 - t0
-
-    print(best_yet)
+                t0 = time.perf_counter()
+                x0, xs, pdf = alg(data_out)
+                pdf.block_until_ready()
+                x0.mean.block_until_ready()
+                xs.mean.block_until_ready()
+                if impl_name == "Cov-based":
+                    x0.cov.block_until_ready()
+                    xs.cov.block_until_ready()
+                else:
+                    x0.cholesky.block_until_ready()
+                    xs.cholesky.block_until_ready()
+                t1 = time.perf_counter()
+                ts.append(t1 - t0)
+            ts = jnp.asarray(ts)
+            print(name, "\n\t", jnp.mean(ts), jnp.std(ts))
 
 
-def _model_interpolation(d):
-    eye_d = jnp.eye(d)
+def _filter_conventional(impl, z, x_mid_z, y_mid_x):
+    kalman = ckf.kalman_filter(impl=impl)
 
-    m0 = jnp.concatenate([jnp.zeros((2,))] * d, axis=0)
-    c0 = jnp.kron(jnp.eye(2), eye_d)
-    z = ckf.RandVar(m0, c0)
+    @jax.jit
+    def apply(data_out):
+        # Initialise
+        x0_ref, logpdf_ref = kalman.init(data_out[0], x=z, y_mid_x=y_mid_x)
 
-    linop = jnp.kron(jnp.eye(2), eye_d)
-    bias = jnp.concatenate([jnp.zeros((2,))] * d, axis=0)
-    cov = jnp.kron(jnp.eye(2), eye_d)
-    x_mid_z = ckf.Trafo(linop, ckf.RandVar(bias, cov))
+        # Kalman filter iteration
+        def step(x, data):
+            x, logpdf = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
+            return x, (x, logpdf)
 
-    linop = jnp.kron(jnp.eye(2, 2), eye_d)
-    bias = jnp.concatenate([jnp.zeros((2,))] * d, axis=0)
-    cov = jnp.kron(jnp.zeros((2, 1)), eye_d)
-    y_mid_x = ckf.Trafo(linop, ckf.RandVar(bias, cov @ cov.T))
+        _, (xs_ref, logpdfs_ref) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
+        return x0_ref, xs_ref, jnp.sum(logpdfs_ref) + logpdf_ref
 
-    return (z, x_mid_z, y_mid_x), cov
+    return apply
+
+
+def _filter_reduced(impl, z, x_mid_z, y_mid_x, F_rank):
+    kalman = ckf.kalman_filter(impl=impl)
+
+    reduction = ckf.model_reduction(F_rank=F_rank, impl=impl)
+    prepared_init = reduction.prepare_init(y_mid_x=y_mid_x, x=z)
+    prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+
+    @jax.jit
+    def apply(data_out):
+        # Initialise
+        y1, (x2, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce_init(
+            data_out[0], prepared=prepared_init
+        )
+        x2, pdf1 = kalman.init(y1, x=x2, y_mid_x=y1_mid_x2)
+        logpdf = pdf1 + pdf2
+
+        # Kalman filter iteration
+
+        def step(x2_and_cond, data):
+            x2_, x_mid_x2_ = x2_and_cond
+            y1_, (z_, x2_mid_z_, y1_mid_x2_), (x_mid_x2_, pdf2_) = reduction.reduce(
+                data, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
+            )
+
+            # Run a single filter-condition step.
+            x2_, pdf1_ = kalman.step(y1_, z=z_, x_mid_z=x2_mid_z_, y_mid_x=y1_mid_x2_)
+
+            # Save some quantities (not part of the simulation, just for testing)
+            logpdf_ = pdf1_ + pdf2_
+            return (x2_, x_mid_x2_), (x2_, logpdf_)
+
+        _, (xs, logpdfs) = jax.lax.scan(step, xs=data_out[1:], init=(x2, x_mid_x2))
+        return x2, xs, jnp.sum(logpdfs) + logpdf
+
+    return apply
 
 
 if __name__ == "__main__":
