@@ -114,7 +114,14 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         return CholeskyNormal(mean=m, cholesky=c)
 
     def rv_condition(rv, cond):
-        R_YX = cond.noise.cholesky.T
+        # Make the observation Cholesky factor square because otherwise
+        # the rank of the conditional Cholesky factor varies with iteration counts.
+        # This would be fine on paper, but does not go with JAX's JIT'ing mechanics.
+        L_YX = jnp.zeros((cond.noise.cholesky.shape[0], cond.noise.cholesky.shape[0]))
+        L_YX = L_YX.at[:, : cond.noise.cholesky.shape[1]].set(cond.noise.cholesky)
+        R_YX = L_YX.T
+
+        # R_YX = cond.noise.cholesky.T
         R_X = rv.cholesky.T
         R_X_F = rv.cholesky.T @ cond.linop.T
         R_y, (R_xy, G) = _revert_conditional(R_X_F=R_X_F, R_X=R_X, R_YX=R_YX)
@@ -452,3 +459,47 @@ def model_reduction(F_rank, impl):
         reduce=reduce_,
         prepare=prepare,
     )
+
+
+@dataclasses.dataclass
+class Estimator:
+    init: Callable
+    step: Callable
+
+
+def kalman_filter(impl):
+    def init(data, x, y_mid_x):
+        y_marg, bwd = impl.rv_condition(x, y_mid_x)
+        logpdf_ref = impl.rv_logpdf(data, y_marg)
+        x0_ref = impl.cond_evaluate(data, bwd)
+        return x0_ref, logpdf_ref
+
+    def step(data, z, x_mid_z, y_mid_x):
+        x = impl.rv_marginal(rv=z, cond=x_mid_z)
+        y_marg, bwd = impl.rv_condition(rv=x, cond=y_mid_x)
+        x_cond = impl.cond_evaluate(data, cond=bwd)
+        logpdf = impl.rv_logpdf(data, y_marg)
+        return x_cond, logpdf
+
+    return Estimator(init=init, step=step)
+
+
+def kalman_smoother(impl):
+    def init(data, x, y_mid_x):
+        y_marg, bwd = impl.rv_condition(x, y_mid_x)
+
+        logpdf_ref = impl.rv_logpdf(data, y_marg)
+        x0_ref = impl.cond_evaluate(data, bwd)
+        return x0_ref, logpdf_ref
+
+    def step(data, z, x_mid_z, y_mid_x):
+        x, smoothing = impl.rv_condition(rv=z, cond=x_mid_z)
+
+        y_marg, bwd = impl.rv_condition(rv=x, cond=y_mid_x)
+
+        x_cond = impl.cond_evaluate(data, cond=bwd)
+
+        logpdf = impl.rv_logpdf(data, y_marg)
+        return x_cond, logpdf, smoothing
+
+    return Estimator(init=init, step=step)

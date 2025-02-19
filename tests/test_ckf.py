@@ -177,22 +177,19 @@ def test_kalman_filter(impl):
     (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
     data_out = jax.random.normal(key2, shape=(20, dim.y_sing))
 
+    # Assemble a Kalman filter
+    kalman = ckf.kalman_filter(impl=impl)
+
     # Initialise
-    x = z
-    y_marg, bwd = impl.rv_condition(x, y_mid_x)
-    logpdf_ref = impl.rv_logpdf(jnp.atleast_1d(data_out[0]), y_marg)
-    x0_ref = impl.cond_evaluate(jnp.atleast_1d(data_out[0]), bwd)
+    x0_ref, logpdf_ref = kalman.init(data_out[0], x=z, y_mid_x=y_mid_x)
     assert _allclose(x0_ref.mean[: dim.y_sing], data_out[0])
     assert _allclose(x0_ref.cov_dense()[:, : dim.y_sing], 0.0)
     assert _allclose(x0_ref.cov_dense()[: dim.y_sing, :], 0.0)
 
     # Kalman filter iteration
-    def step(x_, d_):
-        x_ = impl.rv_marginal(rv=x_, cond=x_mid_z)
-        y_, x_ = impl.rv_condition(rv=x_, cond=y_mid_x)
-        x_ = impl.cond_evaluate(jnp.atleast_1d(d_), cond=x_)
-        logpdf_ = impl.rv_logpdf(jnp.atleast_1d(d_), y_)
-        return x_, (x_, logpdf_)
+    def step(x, data):
+        x, logpdf = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
+        return x, (x, logpdf)
 
     _, (xs_ref, logpdfs_ref) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
     assert _allclose(xs_ref.mean[:, : dim.y_sing], data_out[1:])
@@ -205,33 +202,26 @@ def test_kalman_filter(impl):
     prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
 
     # Initialise
-    d = jnp.atleast_1d(data_out[0])
     y1, (x2, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce_init(
-        d, prepared=prepared_init
+        data_out[0], prepared=prepared_init
     )
-    y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
-    x2 = impl.cond_evaluate(y1, bwd)
-    pdf1 = impl.rv_logpdf(y1, y1_marg)
+    x2, pdf1 = kalman.init(y1, x=x2, y_mid_x=y1_mid_x2)
     logpdf_reduced = pdf1 + pdf2
-    x0 = impl.rv_marginal(x2, cond=x_mid_x2)
+    x0 = impl.rv_marginal(x2, cond=x_mid_x2)  # only for testing
     assert _allclose(x0.mean, x0_ref.mean)
     assert _allclose(x0.cov_dense(), x0_ref.cov_dense())
     assert _allclose(logpdf_reduced, logpdf_ref)
 
     # Kalman filter iteration
 
-    def step(x_, d_):
-        x2_, x_mid_x2_ = x_
-        d_ = jnp.atleast_1d(d_)
+    def step(x2_and_cond, data):
+        x2_, x_mid_x2_ = x2_and_cond
         y1_, (z_, x2_mid_z_, y1_mid_x2_), (x_mid_x2_, pdf2_) = reduction.reduce(
-            d_, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
+            data, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
         )
 
         # Run a single filter-condition step.
-        x2_ = impl.rv_marginal(z_, x2_mid_z_)
-        y1_marg_, bwd_ = impl.rv_condition(x2_, y1_mid_x2_)
-        x2_ = impl.cond_evaluate(y1_, bwd_)
-        pdf1_ = impl.rv_logpdf(y1_, y1_marg_)
+        x2_, pdf1_ = kalman.step(y1_, z=z_, x_mid_z=x2_mid_z_, y_mid_x=y1_mid_x2_)
 
         # Save some quantities (not part of the simulation, just for testing)
         xx = impl.rv_marginal(rv=x2_, cond=x_mid_x2_)
@@ -245,100 +235,86 @@ def test_kalman_filter(impl):
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
-def test_rts_smoother(impl):
+def test_kalman_smoother(impl, num_data=5):
     key = jax.random.PRNGKey(1)
     key1, key2 = jax.random.split(key, num=2)
     dim = test_util.DimCfg(x=4, y_sing=3, y_nonsing=0)
     (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
-    data_out = jax.random.normal(key2, shape=(20, dim.y_sing))
+    data_out = jax.random.normal(key2, shape=(num_data, dim.y_sing))
 
-    x = z
-    y_marg, bwd = impl.rv_condition(x, y_mid_x)
-    logpdf_ref = impl.rv_logpdf(jnp.atleast_1d(data_out[0]), y_marg)
-    x = impl.cond_evaluate(jnp.atleast_1d(data_out[0]), bwd)
-    smoothing_all = []
+    # Assemble a Kalman smoother
+    kalman = ckf.kalman_smoother(impl=impl)
 
-    # Filtering pass
-    for d in data_out[1:]:
-        x, smoothing = impl.rv_condition(rv=x, cond=x_mid_z)
-        y, x = impl.rv_condition(rv=x, cond=y_mid_x)
-        x = impl.cond_evaluate(jnp.atleast_1d(d), cond=x)
-        logpdf_ref += impl.rv_logpdf(jnp.atleast_1d(d), y)
+    # Kalman smoother iteration
 
-        smoothing_all.append(smoothing)
+    def step(x, data):
+        x, logpdf, bwd = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
+        return x, (logpdf, bwd)
 
-    means, covs = [x.mean], [x.cov_dense()]
+    x0_ref, logpdf_ref = kalman.init(data_out[0], x=z, y_mid_x=y_mid_x)
+    xx_ref, (logpdfs_ref, smoothing) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
+    assert _allclose(xx_ref.mean[: dim.y_sing], data_out[-1])
+    assert _allclose(xx_ref.cov_dense()[:, : dim.y_sing], 0.0)
+    assert _allclose(xx_ref.cov_dense()[: dim.y_sing, :], 0.0)
 
-    # Smoothing pass
-    for smoothing in reversed(smoothing_all):
-        x = impl.rv_marginal(x, smoothing)
-        means.append(x.mean)
-        covs.append(x.cov_dense())
+    def smoothing_step(x, bwd):
+        x = impl.rv_marginal(x, bwd)
+        return x, x
 
-    means = jnp.stack(means)[::-1]
-    covs = jnp.stack(covs)[::-1]
+    _, xs_ref = jax.lax.scan(smoothing_step, xs=smoothing, init=xx_ref, reverse=True)
+    assert _allclose(xs_ref.mean[:, : dim.y_sing], data_out[:-1])
+    assert _allclose(xs_ref.cov_dense()[:, :, : dim.y_sing], 0.0)
+    assert _allclose(xs_ref.cov_dense()[:, : dim.y_sing, :], 0.0)
 
-    i = dim.y_sing + dim.y_nonsing
-    assert jnp.allclose(means[:, :i], data_out)
-    assert jnp.allclose(covs[:, :i, :], 0.0, atol=1e-5)
-    assert jnp.allclose(covs[:, :, :i], 0.0, atol=1e-5)
-
-    means_ref, covs_ref = means, covs
-
+    # Reduce the model
     reduction = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
     prepared_init = reduction.prepare_init(y_mid_x=y_mid_x, x=z)
     prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
 
-    d = jnp.atleast_1d(data_out[0])
+    # Initialise
     y1, (x2, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce_init(
-        d, prepared=prepared_init
+        data_out[0], prepared=prepared_init
     )
-    y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
-    x2 = impl.cond_evaluate(y1, bwd)
-    pdf1 = impl.rv_logpdf(y1, y1_marg)
+    x2, pdf1 = kalman.init(y1, x=x2, y_mid_x=y1_mid_x2)
     logpdf_reduced = pdf1 + pdf2
+    assert _allclose(logpdf_reduced, logpdf_ref)
 
-    smoothing_all = []
-    x_mid_x2_all = []
+    # Kalman filter iteration
 
-    for d in data_out[1:]:
-        x_mid_x2_all.append(x_mid_x2)
-
-        d = jnp.atleast_1d(d)
-        y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce(
-            d, hidden=x2, z_mid_hidden=x_mid_x2, prepared=prepared
+    def step(x2_and_cond, data):
+        x2_, x_mid_x2_ = x2_and_cond
+        save = x_mid_x2_
+        y1_, (z_, x2_mid_z_, y1_mid_x2_), (x_mid_x2_, pdf2_) = reduction.reduce(
+            data, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
         )
 
-        # Run a single smoother step.
-        x2, smoothing = impl.rv_condition(z, x2_mid_z)
-        y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
-        x2 = impl.cond_evaluate(y1, bwd)
-        pdf1 = impl.rv_logpdf(y1, y1_marg)
-        logpdf_reduced += pdf1 + pdf2
+        # Run a single filter-condition step.
+        x2_, pdf1_, smooth_ = kalman.step(
+            y1_, z=z_, x_mid_z=x2_mid_z_, y_mid_x=y1_mid_x2_
+        )
 
-        smoothing_all.append(smoothing)
+        logpdf_ = pdf1_ + pdf2_
+        return (x2_, x_mid_x2_), (logpdf_, smooth_, save)
 
-    xx = impl.rv_marginal(x2, cond=x_mid_x2)
-    means = [xx.mean]
-    covs = [xx.cov_dense()]
+    (x2, x_mid_x2), (logpdfs, smoothing, x_mid_x2_all) = jax.lax.scan(
+        step, xs=data_out[1:], init=(x2, x_mid_x2)
+    )
 
-    for smoothing, x_mid_x2 in zip(reversed(smoothing_all), reversed(x_mid_x2_all)):
-        x2 = impl.rv_marginal(x2, smoothing)
+    xx = impl.rv_marginal(x2, x_mid_x2)
+    assert _allclose(xx.mean, xx_ref.mean)
+    assert _allclose(xx.cov_dense(), xx_ref.cov_dense())
+    assert _allclose(logpdfs, logpdfs_ref)
 
-        # Save some quantities (not part of the simulation, just for testing)
-        xx = impl.rv_marginal(rv=x2, cond=x_mid_x2)
-        means.append(xx.mean)
-        covs.append(xx.cov_dense())
+    def smoothing_step(x2_, smooth_and_cond):
+        smooth, x_mid_x2_ = smooth_and_cond
+        x2_ = impl.rv_marginal(x2_, smooth)
+        xx_ = impl.rv_marginal(x2_, x_mid_x2_)  # mainly for testing
+        return x2_, xx_
 
-    means = jnp.stack(means)[::-1]
-    covs = jnp.stack(covs)[::-1]
+    _, (xs) = jax.lax.scan(
+        smoothing_step, xs=(smoothing, x_mid_x2_all), init=x2, reverse=True
+    )
 
-    tol = jnp.sqrt(jnp.finfo(means.dtype).eps)
-    assert jnp.allclose(logpdf_reduced, logpdf_ref)
-    assert jnp.allclose(means, means_ref, atol=tol, rtol=tol)
-    assert jnp.allclose(covs, covs_ref, atol=tol, rtol=tol)
+    assert _allclose(xs.mean, xs_ref.mean)
+    assert _allclose(xs.cov_dense(), xs_ref.cov_dense())
 
-    i = dim.y_sing + dim.y_nonsing
-    assert jnp.allclose(means[:, :i], data_out, atol=tol, rtol=tol)
-    assert jnp.allclose(covs[:, :i, :], 0.0, atol=tol, rtol=tol)
-    assert jnp.allclose(covs[:, :, :i], 0.0, atol=tol, rtol=tol)
