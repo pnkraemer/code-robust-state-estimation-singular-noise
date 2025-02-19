@@ -15,19 +15,19 @@ def case_impl_cholesky_based() -> ckf.Impl:
 
 
 def case_dim_base() -> test_util.DimCfg:
-    return test_util.DimCfg(x=4, y_sing=1, y_nonsing=2)
+    return test_util.DimCfg(x=5, y_sing=2, y_nonsing=2)
 
 
 def case_dim_nonsing_zero() -> test_util.DimCfg:
-    return test_util.DimCfg(x=4, y_sing=1, y_nonsing=0)
+    return test_util.DimCfg(x=5, y_sing=2, y_nonsing=0)
 
 
 def case_dim_sing_zero() -> test_util.DimCfg:
-    return test_util.DimCfg(x=4, y_sing=0, y_nonsing=2)
+    return test_util.DimCfg(x=5, y_sing=0, y_nonsing=2)
 
 
 def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
-    return test_util.DimCfg(x=4, y_sing=0, y_nonsing=0)
+    return test_util.DimCfg(x=5, y_sing=0, y_nonsing=0)
 
 
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")

@@ -1,3 +1,5 @@
+"""Constrained Kalman filtering (-> "ckf") and Rauch--Tung-Striebel smoothing."""
+
 import jax.numpy as jnp
 import jax
 import dataclasses
@@ -155,7 +157,6 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
 
     def rv_marginal(rv, cond):
         mean = cond.linop @ rv.mean + cond.noise.mean
-
         mtrx = jnp.concatenate([rv.cholesky.T @ cond.linop.T, cond.noise.cholesky.T])
         R = jnp.linalg.qr(mtrx, mode="r")
         return CholeskyNormal(mean, R.T)
@@ -183,15 +184,15 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         del F_rank
         return cond.noise.cholesky
 
-    def rv_logpdf(u, /, rv, cholesky_is_triangular=True):
-        # The Cholesky factor is triangular, so we compute a cheap slogdet.
-        assert cholesky_is_triangular
-
-        diagonal = jnp.diagonal(rv.cholesky, axis1=-1, axis2=-2)
+    def rv_logpdf(u, /, rv):
+        # Ensure that the Cholesky factor is triangular
+        # (it should be, but there is no quarantee).
+        cholesky = jnp.linalg.qr(rv.cholesky.T, mode="r").T
+        diagonal = jnp.diagonal(cholesky, axis1=-1, axis2=-2)
         slogdet = jnp.sum(jnp.log(jnp.abs(diagonal)))
 
         dx = u - rv.mean
-        residual_white = jax.scipy.linalg.solve_triangular(rv.cholesky.T, dx, trans="T")
+        residual_white = jax.scipy.linalg.solve_triangular(cholesky.T, dx, trans="T")
         x1 = jnp.dot(residual_white, residual_white)
         x2 = 2.0 * slogdet
         x3 = u.size * jnp.log(jnp.pi * 2)
@@ -208,7 +209,23 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
     )
 
 
-def impl_cov_based() -> Impl[CovNormal]:
+def cholesky_solve():
+    def solve(A, b):
+        cho_factor = jax.scipy.linalg.cho_factor(A)
+        return jax.scipy.linalg.cho_solve(cho_factor, b)
+
+    return solve
+
+
+def qr_solve():
+    def solve(A, b):
+        R = jnp.linalg.qr(A, mode="r")
+        return jax.scipy.linalg.solve_triangular(R, b, lower=False)
+
+    return solve
+
+
+def impl_cov_based(solve_fun=cholesky_solve()) -> Impl[CovNormal]:
     def rv_from_cholesky(m, c):
         return CovNormal(m, c @ c.T)
 
@@ -218,7 +235,7 @@ def impl_cov_based() -> Impl[CovNormal]:
         C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
         C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
 
-        G = jnp.linalg.solve(C1.T, C12.T).T
+        G = solve_fun(C1.T, C12.T).T
         Z = C2 - G @ C1 @ G.T
 
         bias1, bias2 = jnp.split(rv.mean, indices_or_sections=[index], axis=0)
@@ -237,7 +254,7 @@ def impl_cov_based() -> Impl[CovNormal]:
         S = cond.linop @ rv.cov @ cond.linop.T + cond.noise.cov
         marg = CovNormal(z, S)
 
-        K = jnp.linalg.solve(S.T, cond.linop @ rv.cov).T
+        K = solve_fun(S.T, cond.linop @ rv.cov).T
         m = rv.mean - K @ z
         C = rv.cov - K @ cond.linop @ rv.cov
         cond = AffineCond(linop=K, noise=CovNormal(mean=m, cov=C))
@@ -256,9 +273,21 @@ def impl_cov_based() -> Impl[CovNormal]:
         vecs = eigh.eigenvectors[:, i]
         return vecs @ jnp.diag(jnp.sqrt(vals))
 
-    def rv_logpdf(y, rv):
-        logpdf = jax.scipy.stats.multivariate_normal.logpdf
-        return logpdf(y, rv.mean, rv.cov)
+    def rv_logpdf(u, rv):
+        # return 1.
+        cholesky = jnp.linalg.cholesky(rv.cov)
+
+        diagonal = jnp.diagonal(cholesky, axis1=-1, axis2=-2)
+        slogdet = jnp.sum(jnp.log(jnp.abs(diagonal)))
+
+        dx = u - rv.mean
+        residual_white = jax.scipy.linalg.solve_triangular(cholesky.T, dx, trans="T")
+        x1 = jnp.dot(residual_white, residual_white)
+        x2 = 2.0 * slogdet
+        x3 = u.size * jnp.log(jnp.pi * 2)
+        return -0.5 * (x1 + x2 + x3)
+        # logpdf = jax.scipy.stats.multivariate_normal.logpdf
+        # return logpdf(u, rv.mean, rv.cov)
 
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
@@ -279,7 +308,8 @@ def cond_split(cond: AffineCond, index: int) -> SplitAffineCond:
 def cond_invert_dirac(y: jax.Array, /, dirac_cond) -> jax.Array:
     A = dirac_cond.linop
     b = y - dirac_cond.noise.mean
-    return jnp.linalg.solve(A, b)
+    # A is lower-triangular because it is A=S.T and S comes from a QR decomp.
+    return jax.scipy.linalg.solve_triangular(A, b, lower=True)
 
 
 @dataclasses.dataclass
@@ -290,10 +320,11 @@ class ModelReduction:
     reduce: Callable
 
 
-def model_reduction(F_rank, impl):
+def model_reduction(F_rank, impl) -> ModelReduction:
     # todo: reduce duplication between the two prepare's and reduce's
-    # because currently, they're almost identical
+    #  because currently, they're almost identical
     def prepare_init(y_mid_x: AffineCond, x: T):
+        """Like prepare(), but for Phi=0 which simplifies some of the calls."""
         # Extract F
         F = impl.get_F(y_mid_x, F_rank=F_rank)
 
@@ -319,9 +350,10 @@ def model_reduction(F_rank, impl):
         y1_mid_x1_and_x2 = cond_split(cond=(y1_mid_x @ W), index=len(V2.T))
 
         # We need to memorise how to turn x1/x2 back into x
-        cond = AffineCond(
-            W, impl.rv_from_cholesky(jnp.zeros((len(W),)), jnp.zeros((len(W), len(W))))
+        zero_noise = impl.rv_from_cholesky(
+            jnp.zeros((len(W),)), jnp.zeros((len(W), len(W)))
         )
+        cond = AffineCond(W, zero_noise)
         x_mid_x1_and_x2 = cond_split(cond=cond, index=len(V2.T))
 
         # We only care about y2 | z, not about x1 | z, so we combine transformations
@@ -336,6 +368,7 @@ def model_reduction(F_rank, impl):
         return reduced_model, info
 
     def reduce_init(y: jax.Array, prepared):
+        """Like prepare(), but for Phi=0 which simplifies some of the calls."""
         # Read off prepared values
         prepared_models, info = prepared
         (info_transform_back, info_identify_constraint, info_split_data) = info
@@ -364,18 +397,20 @@ def model_reduction(F_rank, impl):
         return y1, (x2, y1_mid_x2), (x_mid_x2, logpdf_y2)
 
     def prepare(y_mid_x: AffineCond, x_mid_z: AffineCond):
-        """Carry out as much as possible without seeing data."""
+        """Carry out as much reduction as possible without seeing data."""
 
         # Extract F
         F = impl.get_F(y_mid_x, F_rank=F_rank)
 
         # First QR iteration
+        # todo: don't always do that?
         V, R = jnp.linalg.qr(F, mode="complete")
         V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
         y1_mid_x = V1.T @ y_mid_x
         y2_mid_x = V2.T @ y_mid_x
 
         # Second QR iteration
+        # todo: don't always do that?
         W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
         W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
 
@@ -393,9 +428,8 @@ def model_reduction(F_rank, impl):
         y1_mid_x1_and_x2 = cond_split(cond=(y1_mid_x @ W), index=len(V2.T))
 
         # We need to memorise how to turn x1/x2 back into x
-        zero_noise = impl.rv_from_cholesky(
-            jnp.zeros((len(W),)), jnp.zeros((len(W), len(W)))
-        )
+        n = len(W)
+        zero_noise = impl.rv_from_cholesky(jnp.zeros((n,)), jnp.zeros((n, n)))
         cond = AffineCond(W, zero_noise)
         x_mid_x1_and_x2 = cond_split(cond=cond, index=len(V2.T))
 
@@ -466,7 +500,7 @@ class Estimator:
     step: Callable
 
 
-def kalman_filter(impl):
+def kalman_filter(impl) -> Estimator:
     def init(data, x, y_mid_x):
         y_marg, bwd = impl.rv_condition(x, y_mid_x)
         logpdf_ref = impl.rv_logpdf(data, y_marg)
@@ -483,7 +517,7 @@ def kalman_filter(impl):
     return Estimator(init=init, step=step)
 
 
-def rts_smoother(impl):
+def rts_smoother(impl) -> Estimator:
     def init(data, x, y_mid_x):
         y_marg, bwd = impl.rv_condition(x, y_mid_x)
         logpdf_ref = impl.rv_logpdf(data, y_marg)
