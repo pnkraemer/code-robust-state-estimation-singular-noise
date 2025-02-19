@@ -14,20 +14,21 @@ class DimCfg(NamedTuple):
     y_nonsing: int
 
 
-def model_interpolation(impl: ckf.Impl):
+def model_interpolation(impl: ckf.Impl, noise_rank=0):
+    assert 0 <= noise_rank <= 1
     m0 = jnp.zeros((2,))
     c0 = jnp.eye(2)
     z = impl.rv_from_cholesky(m0, c0)
 
-    linop = jnp.eye(2)
-    bias = jnp.zeros((2,))
+    linop = jnp.arange(1.0, 1.0 + 2**2).reshape((2, 2)) / 10
+    bias = jnp.ones((2,))
     cov = jnp.eye(2)
     noise = impl.rv_from_cholesky(bias, cov)
     x_mid_z = ckf.AffineCond(linop, noise)
 
     linop = jnp.eye(1, 2)
     bias = jnp.zeros((1,))
-    cholesky = jnp.zeros((1, 0))  # zero-rank
+    cholesky = 0.0 * jnp.eye(1, noise_rank)
     noise = impl.rv_from_cholesky(bias, cholesky)
     y_mid_x = ckf.AffineCond(linop, noise)
 
