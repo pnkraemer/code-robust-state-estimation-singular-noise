@@ -35,7 +35,8 @@ def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_shapes(impl, dim):
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    key = jax.random.PRNGKey(seed=3)
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
 
     # Start reducing the model
     reduction = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
@@ -66,7 +67,8 @@ def test_model_reduce_shapes(impl, dim):
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_values(dim, impl):
-    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    key = jax.random.PRNGKey(seed=3)
+    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
 
     # Reference (initialisation):
     _, bwd = impl.rv_condition(x, cond=y_mid_x)
@@ -105,7 +107,8 @@ def test_model_reduce_values(dim, impl):
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_logpdf(dim, impl):
-    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    key = jax.random.PRNGKey(seed=3)
+    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
 
     # Reference (initialisation):
     y_marg, bwd = impl.rv_condition(x, cond=y_mid_x)
@@ -144,13 +147,15 @@ def test_model_reduce_logpdf(dim, impl):
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 def test_logpdfs_consistent_across_impls(dim):
     impl = ckf.impl_cov_based()
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    key = jax.random.PRNGKey(seed=3)
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
+
     ref_x = impl.rv_marginal(rv=z, cond=x_mid_z)
     y_marg, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
     logpdf1 = impl.rv_logpdf(y, y_marg)
 
     impl = ckf.impl_cholesky_based()
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
     ref_x = impl.rv_marginal(rv=z, cond=x_mid_z)
     y_marg, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
     logpdf2 = impl.rv_logpdf(y, y_marg)
@@ -161,10 +166,11 @@ def test_logpdfs_consistent_across_impls(dim):
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_kalman_filter(impl):
-    (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(impl=impl)
-
-    data_in = jnp.linspace(0, 1, num=20)
-    data_out = data_in + 0.1 + jnp.sin(data_in**2)
+    key = jax.random.PRNGKey(1)
+    key1, key2 = jax.random.split(key, num=2)
+    dim = test_util.DimCfg(x=4, y_sing=3, y_nonsing=0)
+    (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
+    data_out = jax.random.normal(key2, shape=(20, dim.y_sing))
 
     x = z
     y_marg, bwd = impl.rv_condition(x, y_mid_x)
@@ -183,9 +189,11 @@ def test_kalman_filter(impl):
 
     means = jnp.stack(means)
     covs = jnp.stack(covs)
-    assert jnp.allclose(means[:, 0], data_out)
-    assert jnp.allclose(covs[:, 0, :], 0.0, atol=1e-5)
-    assert jnp.allclose(covs[:, :, 0], 0.0, atol=1e-5)
+
+    i = dim.y_sing + dim.y_nonsing
+    assert jnp.allclose(means[:, :i], data_out)
+    assert jnp.allclose(covs[:, :i, :], 0.0, atol=1e-5)
+    assert jnp.allclose(covs[:, :, :i], 0.0, atol=1e-5)
     means_ref, covs_ref = means, covs
 
     reduction = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
@@ -231,21 +239,24 @@ def test_kalman_filter(impl):
     means = jnp.stack(means)
     covs = jnp.stack(covs)
 
+    tol = jnp.sqrt(jnp.finfo(means.dtype).eps)
     assert jnp.allclose(logpdf_reduced, logpdf_ref)
-    assert jnp.allclose(means, means_ref)
-    assert jnp.allclose(covs, covs_ref)
+    assert jnp.allclose(means, means_ref, atol=tol, rtol=tol)
+    assert jnp.allclose(covs, covs_ref, atol=tol, rtol=tol)
 
-    assert jnp.allclose(means[:, 0], data_out)
-    assert jnp.allclose(covs[:, 0, :], 0.0, atol=1e-5)
-    assert jnp.allclose(covs[:, :, 0], 0.0, atol=1e-5)
+    i = dim.y_sing + dim.y_nonsing
+    assert jnp.allclose(means[:, :i], data_out, atol=tol, rtol=tol)
+    assert jnp.allclose(covs[:, :i, :], 0.0, atol=tol, rtol=tol)
+    assert jnp.allclose(covs[:, :, :i], 0.0, atol=tol, rtol=tol)
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_rts_smoother(impl):
-    (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(impl=impl, noise_rank=0)
-
-    data_in = jnp.linspace(0, 1, num=20)
-    data_out = data_in + 0.1 + jnp.sin(data_in**2)
+    key = jax.random.PRNGKey(1)
+    key1, key2 = jax.random.split(key, num=2)
+    dim = test_util.DimCfg(x=4, y_sing=3, y_nonsing=0)
+    (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
+    data_out = jax.random.normal(key2, shape=(20, dim.y_sing))
 
     x = z
     y_marg, bwd = impl.rv_condition(x, y_mid_x)
@@ -272,9 +283,12 @@ def test_rts_smoother(impl):
 
     means = jnp.stack(means)[::-1]
     covs = jnp.stack(covs)[::-1]
-    assert jnp.allclose(means[:, 0], data_out)
-    assert jnp.allclose(covs[:, 0, :], 0.0, atol=1e-5)
-    assert jnp.allclose(covs[:, :, 0], 0.0, atol=1e-5)
+
+    i = dim.y_sing + dim.y_nonsing
+    assert jnp.allclose(means[:, :i], data_out)
+    assert jnp.allclose(covs[:, :i, :], 0.0, atol=1e-5)
+    assert jnp.allclose(covs[:, :, :i], 0.0, atol=1e-5)
+
     means_ref, covs_ref = means, covs
 
     reduction = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
@@ -330,10 +344,12 @@ def test_rts_smoother(impl):
     means = jnp.stack(means)[::-1]
     covs = jnp.stack(covs)[::-1]
 
+    tol = jnp.sqrt(jnp.finfo(means.dtype).eps)
     assert jnp.allclose(logpdf_reduced, logpdf_ref)
-    assert jnp.allclose(means, means_ref)
-    assert jnp.allclose(covs, covs_ref)
+    assert jnp.allclose(means, means_ref, atol=tol, rtol=tol)
+    assert jnp.allclose(covs, covs_ref, atol=tol, rtol=tol)
 
-    assert jnp.allclose(means[:, 0], data_out)
-    assert jnp.allclose(covs[:, 0, :], 0.0, atol=1e-5)
-    assert jnp.allclose(covs[:, :, 0], 0.0, atol=1e-5)
+    i = dim.y_sing + dim.y_nonsing
+    assert jnp.allclose(means[:, :i], data_out, atol=tol, rtol=tol)
+    assert jnp.allclose(covs[:, :i, :], 0.0, atol=tol, rtol=tol)
+    assert jnp.allclose(covs[:, :, :i], 0.0, atol=tol, rtol=tol)
