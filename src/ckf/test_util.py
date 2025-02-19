@@ -39,12 +39,12 @@ def model_random(*, dim: DimCfg, impl: ckf.Impl):
     key = jax.random.PRNGKey(seed=3)
 
     key, k1, k2 = jax.random.split(key, num=3)
-    m0 = jax.random.normal(k1, shape=(dim.z,))
-    c0 = jax.random.normal(k2, shape=(dim.z, dim.z))
+    m0 = jax.random.normal(k1, shape=(dim.x,))
+    c0 = jax.random.normal(k2, shape=(dim.x, dim.x))
     z = impl.rv_from_cholesky(m0, c0)
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
-    linop = jax.random.normal(k1, shape=(dim.x, dim.z))
+    linop = jax.random.normal(k1, shape=(dim.x, dim.x))
     bias = jax.random.normal(k2, shape=(dim.x,))
     cov = jax.random.normal(k3, shape=(dim.x, dim.x))
     noise = impl.rv_from_cholesky(bias, cov)

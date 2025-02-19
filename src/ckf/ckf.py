@@ -120,6 +120,27 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         cond = AffineCond(G, CholeskyNormal(mean_new, R_xy.T))
         return marg, cond
 
+    def _revert_conditional(R_X_F: jax.Array, R_X: jax.Array, R_YX: jax.Array):
+        # Taken from:
+        # https://github.com/pnkraemer/probdiffeq/blob/main/probdiffeq/util/cholesky_util.py
+
+        R = jnp.block([[R_YX, jnp.zeros((R_YX.shape[0], R_X.shape[1]))], [R_X_F, R_X]])
+        R = jnp.linalg.qr(R, mode="r")
+
+        # ~R_{Y}
+        d_out = R_YX.shape[1]
+        R_Y = R[:d_out, :d_out]
+
+        # something like the cross-covariance
+        R12 = R[:d_out, d_out:]
+
+        # Implements G = R12.T @ np.linalg.inv(R_Y.T) in clever:
+        G = jax.scipy.linalg.solve_triangular(R_Y, R12, lower=False).T
+
+        # ~R_{X \mid Y}
+        R_XY = R[d_out:, d_out:]
+        return R_Y, (R_XY, G)
+
     def rv_marginal(rv, cond):
         mean = cond.linop @ rv.mean + cond.noise.mean
 
@@ -145,27 +166,6 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
 
     def cond_evaluate(x, /, cond):
         return CholeskyNormal(cond.linop @ x + cond.noise.mean, cond.noise.cholesky)
-
-    def _revert_conditional(R_X_F: jax.Array, R_X: jax.Array, R_YX: jax.Array):
-        # Taken from:
-        # https://github.com/pnkraemer/probdiffeq/blob/main/probdiffeq/util/cholesky_util.py
-
-        R = jnp.block([[R_YX, jnp.zeros((R_YX.shape[0], R_X.shape[1]))], [R_X_F, R_X]])
-        R = jnp.linalg.qr(R, mode="r")
-
-        # ~R_{Y}
-        d_out = R_YX.shape[1]
-        R_Y = R[:d_out, :d_out]
-
-        # something like the cross-covariance
-        R12 = R[:d_out, d_out:]
-
-        # Implements G = R12.T @ np.linalg.inv(R_Y.T) in clever:
-        G = jax.scipy.linalg.solve_triangular(R_Y, R12, lower=False).T
-
-        # ~R_{X \mid Y}
-        R_XY = R[d_out:, d_out:]
-        return R_Y, (R_XY, G)
 
     def get_F(cond, F_rank):
         del F_rank
@@ -270,11 +270,89 @@ def cond_invert_dirac(y: jax.Array, /, dirac_cond) -> jax.Array:
     return jnp.linalg.solve(A, b)
 
 
+@dataclasses.dataclass
+class ModelReduction:
+    prepare_init: Callable
+    reduce_init: Callable
+    prepare: Callable
+    reduce: Callable
+
+
 def model_reduction(F_rank, impl):
+    def prepare_init(y_mid_x: AffineCond, x: T):
+        # Extract F
+        F = impl.get_F(y_mid_x, F_rank=F_rank)
+
+        # First QR iteration
+        V, R = jnp.linalg.qr(F, mode="complete")
+        V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
+        y1_mid_x = V1.T @ y_mid_x
+        y2_mid_x = V2.T @ y_mid_x
+
+        # Second QR iteration
+        W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
+        W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
+
+        # Factorise the z-to-x conditional
+        x1_and_x2 = W.T @ x
+        x1, x2_mid_x1 = impl.rv_factorise(rv=x1_and_x2, index=len(V2.T))
+
+        # y2 | x1 is deterministic (ie zero cov) and y2 is independent of x2 given x1
+        y2_mid_x1 = y2_mid_x @ W1
+
+        # y1 now depends on both x1 and x2; we implement this as a split' conditional,
+        #  which is a conditional with two linops
+        y1_mid_x1_and_x2 = cond_split(cond=(y1_mid_x @ W), index=len(V2.T))
+
+        # We need to memorise how to turn x1/x2 back into x
+        cond = AffineCond(
+            W, impl.rv_from_cholesky(jnp.zeros((len(W),)), jnp.zeros((len(W), len(W))))
+        )
+        x_mid_x1_and_x2 = cond_split(cond=cond, index=len(V2.T))
+
+        # We only care about y2 | z, not about x1 | z, so we combine transformations
+        y2 = impl.rv_marginal(x1, cond=y2_mid_x1)
+
+        # Return values:
+        reduced_model = (y2, x2_mid_x1, y1_mid_x1_and_x2)
+        info_transform_back = x_mid_x1_and_x2
+        info_identify_constraint = y2_mid_x1
+        info_split_data = (V1, V2)
+        info = (info_transform_back, info_identify_constraint, info_split_data)
+        return reduced_model, info
+
+    def reduce_init(y: jax.Array, prepared):
+        # Read off prepared values
+        prepared_models, info = prepared
+        (info_transform_back, info_identify_constraint, info_split_data) = info
+        (y2_marg, x2_mid_x1, y1_mid_x1_and_x2) = prepared_models
+        x_mid_x1_and_x2 = info_transform_back
+        y2_mid_x1 = info_identify_constraint
+        (V1, V2) = info_split_data
+
+        # Split the data data
+        y1, y2 = V1.T @ y, V2.T @ y
+
+        # Fix y2 (via x1) in remaining conditionals.
+        #  Recall that by construction of the QR decompositions,
+        #  y2_mid_x1 has zero covariance.
+        x1_value = cond_invert_dirac(y2, dirac_cond=y2_mid_x1)
+        x2 = impl.cond_evaluate(x1_value, cond=x2_mid_x1)
+        y1_mid_x2 = impl.split_cond_fix_x1(x1_value, split_cond=y1_mid_x1_and_x2)
+        x_mid_x2 = impl.split_cond_fix_x1(x1_value, split_cond=x_mid_x1_and_x2)
+
+        # Fix y2 in the "prior" distribution
+        logpdf_y2 = impl.rv_logpdf(y2, y2_marg)
+
+        # Now we have z, x2_mid_z, and y1_mid_x2
+        # which is a "complete model" (just smaller than the previous one)
+        # and we can run the usual estimation (eg Kalman filter)
+        return y1, (x2, y1_mid_x2), (x_mid_x2, logpdf_y2)
+
     # todo: how do we best implement smoothing?
     #  ideally, the z_mid_x2 conditional and the x_mid_z conditional
     #  are combined before the smoothing iteration?
-    def model_prepare(y_mid_x: AffineCond, x_mid_z: AffineCond):
+    def prepare(y_mid_x: AffineCond, x_mid_z: AffineCond):
         """Carry out as much as possible without seeing data."""
 
         # Extract F
@@ -295,6 +373,8 @@ def model_reduction(F_rank, impl):
         x1_mid_z, x2_mid_x1_and_z = impl.cond_factorise(
             cond=x1_and_x2_mid_z, index=len(V2.T)
         )
+        print("a", jax.tree.map(jnp.shape, x1_mid_z))
+        print("b", jax.tree.map(jnp.shape, x2_mid_x1_and_z))
 
         # y2 | x1 is deterministic (ie zero cov) and y2 is independent of x2 given x1
         y2_mid_x1 = y2_mid_x @ W1
@@ -304,9 +384,10 @@ def model_reduction(F_rank, impl):
         y1_mid_x1_and_x2 = cond_split(cond=(y1_mid_x @ W), index=len(V2.T))
 
         # We need to memorise how to turn x1/x2 back into x
-        cond = AffineCond(
-            W, impl.rv_from_cholesky(jnp.zeros((len(W),)), jnp.zeros((len(W), len(W))))
+        zero_noise = impl.rv_from_cholesky(
+            jnp.zeros((len(W),)), jnp.zeros((len(W), len(W)))
         )
+        cond = AffineCond(W, zero_noise)
         x_mid_x1_and_x2 = cond_split(cond=cond, index=len(V2.T))
 
         # We only care about y2 | z, not about x1 | z, so we combine transformations
@@ -320,7 +401,7 @@ def model_reduction(F_rank, impl):
         info = (info_transform_back, info_identify_constraint, info_split_data)
         return reduced_model, info
 
-    def model_reduce(y: jax.Array, z, prepared):
+    def reduce_(y: jax.Array, hidden, z_mid_hidden, prepared):
         """Reduce the model to its 'minimal' version using data."""
 
         # Read off prepared values
@@ -348,16 +429,9 @@ def model_reduction(F_rank, impl):
         #  why? because this way, all x2_mid_z and y2_mid_z are actually
         #  x2_mid_x2prev, y2_mid_x2prev, which means
         #  that the model remains in "small space"
-        #  todo: surely there is a way of clarifying this logic...
-        #  todo: if we constrain an initial condition, we get a x_mid_x2 conditional
-        #   and an x2-posterior. This means that we always get a form
-        #   that satisfies this isistance() below, so we can always do it?
-        #   but this requires that next, we must implement initial condition transforms.
-        if isinstance(z, tuple):
-            hidden, z_mid_hidden = z
-            x2_mid_z = impl.cond_combine(outer=x2_mid_z, inner=z_mid_hidden)
-            y2_mid_z = impl.cond_combine(outer=y2_mid_z, inner=z_mid_hidden)
-            z = hidden
+        x2_mid_z = impl.cond_combine(outer=x2_mid_z, inner=z_mid_hidden)
+        y2_mid_z = impl.cond_combine(outer=y2_mid_z, inner=z_mid_hidden)
+        z = hidden
 
         # Fix y2 in the "prior" distribution
         y2_marg, z_mid_y2 = impl.rv_condition(rv=z, cond=y2_mid_z)
@@ -369,4 +443,9 @@ def model_reduction(F_rank, impl):
         # and we can run the usual estimation (eg Kalman filter)
         return y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, logpdf_y2)
 
-    return model_prepare, model_reduce
+    return ModelReduction(
+        prepare_init=prepare_init,
+        reduce_init=reduce_init,
+        reduce=reduce_,
+        prepare=prepare,
+    )

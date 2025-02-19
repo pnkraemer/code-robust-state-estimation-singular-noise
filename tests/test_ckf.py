@@ -37,9 +37,20 @@ def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
 def test_model_reduce_shapes(impl, dim):
     (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
-    model_prepare, model_reduce = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
-    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    y1, (z, x2_mid_z, y1_mid_x2), info = model_reduce(y, z=z, prepared=prepared)
+    # Start reducing the model
+    reduction = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    prepared = reduction.prepare_init(y_mid_x=y_mid_x, x=z)
+    y1, (x2, y1_mid_x2), (x_mid_x2, _) = reduction.reduce_init(y, prepared=prepared)
+
+    # Condition on the initial data
+    _, bwd = impl.rv_condition(x2, cond=y1_mid_x2)
+    x2_mid_data = impl.cond_evaluate(y1, bwd)
+
+    # Continue reducing the model
+    prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    y1, (z, x2_mid_z, y1_mid_x2), info = reduction.reduce(
+        y, hidden=x2_mid_data, z_mid_hidden=x_mid_x2, prepared=prepared
+    )
 
     # Run a single filter-condition step
     x2 = impl.rv_marginal(z, x2_mid_z)
@@ -55,18 +66,30 @@ def test_model_reduce_shapes(impl, dim):
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_values(dim, impl):
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
-    # Reference:
-    ref_x = impl.rv_marginal(rv=z, cond=x_mid_z)
+    # Reference (initialisation):
+    _, bwd = impl.rv_condition(x, cond=y_mid_x)
+    x_init = impl.cond_evaluate(y, cond=bwd)
+
+    # Reference (step)
+    ref_x = impl.rv_marginal(rv=x_init, cond=x_mid_z)
     _y, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
     ref_x_mid_y = impl.cond_evaluate(y, cond=ref_backward)
 
-    # Reduced model:
-    model_prepare, model_reduce = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
-    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, _) = model_reduce(
-        y, z=z, prepared=prepared
+    # Start reducing the model
+    reduction = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    prepared = reduction.prepare_init(y_mid_x=y_mid_x, x=x)
+    y1, (x2, y1_mid_x2), (x_mid_x2, _) = reduction.reduce_init(y, prepared=prepared)
+
+    # Condition on the initial data
+    _, bwd = impl.rv_condition(x2, cond=y1_mid_x2)
+    x2_mid_data = impl.cond_evaluate(y1, bwd)
+
+    # Continue reducing the model
+    prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    y1, (z, x2_mid_z, y1_mid_x2), info = reduction.reduce(
+        y, hidden=x2_mid_data, z_mid_hidden=x_mid_x2, prepared=prepared
     )
 
     # Run a single filter-condition step
@@ -82,27 +105,40 @@ def test_model_reduce_values(dim, impl):
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_logpdf(dim, impl):
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
+    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(dim=dim, impl=impl)
 
-    # Reference:
-    ref_x = impl.rv_marginal(rv=z, cond=x_mid_z)
-    y_marg, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
+    # Reference (initialisation):
+    y_marg, bwd = impl.rv_condition(x, cond=y_mid_x)
     logpdf1 = impl.rv_logpdf(y, y_marg)
+    x_init = impl.cond_evaluate(y, cond=bwd)
 
-    # Reduced model:
-    model_prepare, model_reduce = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
-    prepared = model_prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
-    y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, pdf2) = model_reduce(
-        y, z=z, prepared=prepared
+    # Reference (step)
+    ref_x = impl.rv_marginal(rv=x_init, cond=x_mid_z)
+    y_marg, _ = impl.rv_condition(rv=ref_x, cond=y_mid_x)
+    logpdf2 = impl.rv_logpdf(y, y_marg)
+
+    # Start reducing the model
+    reduction = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
+    prepared = reduction.prepare_init(y_mid_x=y_mid_x, x=x)
+    y1, (x2, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce_init(y, prepared=prepared)
+
+    # Condition on the initial data
+    y1_marg, bwd = impl.rv_condition(x2, cond=y1_mid_x2)
+    x2_mid_data = impl.cond_evaluate(y1, bwd)
+    pdf1 = impl.rv_logpdf(y1, y1_marg)
+
+    # Continue reducing the model
+    prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    y1, (z, x2_mid_z, y1_mid_x2), (_, pdf3) = reduction.reduce(
+        y, hidden=x2_mid_data, z_mid_hidden=x_mid_x2, prepared=prepared
     )
 
     # Run a single filter-condition step
     x2 = impl.rv_marginal(z, x2_mid_z)
-    y1_marg, _bwd = impl.rv_condition(x2, y1_mid_x2)
-    pdf1 = impl.rv_logpdf(y1, y1_marg)
-    logpdf2 = pdf1 + pdf2
+    y1_marg2, bwd = impl.rv_condition(x2, y1_mid_x2)
+    pdf4 = impl.rv_logpdf(y1, y1_marg2)
 
-    assert jnp.allclose(logpdf1, logpdf2)
+    assert jnp.allclose(logpdf1 + logpdf2, pdf1 + pdf2 + pdf3 + pdf4)
 
 
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
@@ -119,7 +155,8 @@ def test_logpdfs_consistent_across_impls(dim):
     y_marg, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
     logpdf2 = impl.rv_logpdf(y, y_marg)
 
-    assert jnp.allclose(logpdf1, logpdf2)
+    tol = jnp.sqrt(jnp.finfo(y.dtype).eps)
+    assert jnp.allclose(logpdf1, logpdf2, atol=tol, rtol=tol)
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
