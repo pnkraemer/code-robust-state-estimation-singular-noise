@@ -279,6 +279,8 @@ class ModelReduction:
 
 
 def model_reduction(F_rank, impl):
+    # todo: reduce duplication between the two prepare's and reduce's
+    # because currently, they're almost identical
     def prepare_init(y_mid_x: AffineCond, x: T):
         # Extract F
         F = impl.get_F(y_mid_x, F_rank=F_rank)
@@ -349,9 +351,6 @@ def model_reduction(F_rank, impl):
         # and we can run the usual estimation (eg Kalman filter)
         return y1, (x2, y1_mid_x2), (x_mid_x2, logpdf_y2)
 
-    # todo: how do we best implement smoothing?
-    #  ideally, the z_mid_x2 conditional and the x_mid_z conditional
-    #  are combined before the smoothing iteration?
     def prepare(y_mid_x: AffineCond, x_mid_z: AffineCond):
         """Carry out as much as possible without seeing data."""
 
@@ -373,8 +372,6 @@ def model_reduction(F_rank, impl):
         x1_mid_z, x2_mid_x1_and_z = impl.cond_factorise(
             cond=x1_and_x2_mid_z, index=len(V2.T)
         )
-        print("a", jax.tree.map(jnp.shape, x1_mid_z))
-        print("b", jax.tree.map(jnp.shape, x2_mid_x1_and_z))
 
         # y2 | x1 is deterministic (ie zero cov) and y2 is independent of x2 given x1
         y2_mid_x1 = y2_mid_x @ W1

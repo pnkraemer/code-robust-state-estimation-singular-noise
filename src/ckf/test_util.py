@@ -9,7 +9,6 @@ from typing import NamedTuple
 
 
 class DimCfg(NamedTuple):
-    z: int
     x: int
     y_sing: int
     y_nonsing: int
