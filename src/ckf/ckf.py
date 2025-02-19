@@ -11,7 +11,7 @@ class CovNormal:
     mean: jax.Array
     cov: jax.Array
 
-    def __rmatmul__(self, other: jax.Array) -> CovNormal:
+    def __rmatmul__(self, other: jax.Array):
         """Implement Array @ AffineCond"""
         mean = other @ self.mean
         cov = other @ self.cov @ other.T
@@ -27,7 +27,7 @@ class CholeskyNormal:
     mean: jax.Array
     cholesky: jax.Array
 
-    def __rmatmul__(self, other: jax.Array) -> CholeskyNormal:
+    def __rmatmul__(self, other: jax.Array):
         """Implement Array @ AffineCond"""
         mean = other @ self.mean
         cholesky = other @ self.cholesky
@@ -48,11 +48,11 @@ class AffineCond(Generic[T]):
     linop: jax.Array
     noise: T
 
-    def __matmul__(self, other: jax.Array) -> AffineCond:
+    def __matmul__(self, other: jax.Array):
         """Implement AffineCond @ Array"""
         return AffineCond(linop=self.linop @ other, noise=self.noise)
 
-    def __rmatmul__(self, other: jax.Array) -> AffineCond:
+    def __rmatmul__(self, other: jax.Array):
         """Implement Array @ AffineCond"""
         return AffineCond(linop=other @ self.linop, noise=other @ self.noise)
 
@@ -74,9 +74,7 @@ class Impl(Generic[T]):
     rv_marginal: Callable[[T, AffineCond[T]], T]
     rv_logpdf: Callable[[jax.Array, T], jax.Array]
 
-    cond_factorise: Callable[
-        [AffineCond[T], int], tuple[AffineCond[T], SplitAffineCond[T]]
-    ]
+    rv_factorise: Callable[[T, int], tuple[T, AffineCond[T]]]
     cond_evaluate: Callable[[jax.Array, AffineCond[T]], T]
 
     get_F: Callable
@@ -92,6 +90,17 @@ class Impl(Generic[T]):
         linop = outer.linop @ inner.linop
         noise = self.rv_marginal(inner.noise, outer)
         return AffineCond(linop, noise)
+
+    def cond_factorise(
+        self, cond: AffineCond, index: int
+    ) -> tuple[CovNormal, AffineCond]:
+        x1, x2_mid_x1 = self.rv_factorise(cond.noise, index=index)
+
+        linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=0)
+        x1_mid_z = AffineCond(linop1, x1)
+        linop_z = linop2 - x2_mid_x1.linop @ linop1
+        x2_mid_x1_and_z = SplitAffineCond(x2_mid_x1.linop, linop_z, x2_mid_x1.noise)
+        return x1_mid_z, x2_mid_x1_and_z
 
 
 def impl_cholesky_based() -> Impl[CholeskyNormal]:
@@ -118,23 +127,21 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         R = jnp.linalg.qr(mtrx, mode="r")
         return CholeskyNormal(mean, R.T)
 
-    def cond_factorise(
-        cond: AffineCond[CholeskyNormal], index: int
-    ) -> tuple[AffineCond[CholeskyNormal], SplitAffineCond[CholeskyNormal]]:
-        R = jnp.linalg.qr(cond.noise.cholesky.T, mode="r")
+    def rv_factorise(
+        rv: CholeskyNormal, index: int
+    ) -> tuple[CholeskyNormal, AffineCond[CholeskyNormal]]:
+        R = jnp.linalg.qr(rv.cholesky.T, mode="r")
         R1 = R[:index, :index]
         R12 = R[:index, index:]
         R2 = R[index:, index:]
         G = jax.scipy.linalg.solve_triangular(R1, R12, lower=False).T
 
-        bias1, bias2 = jnp.split(cond.noise.mean, indices_or_sections=[index], axis=0)
-        linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=0)
+        bias1, bias2 = jnp.split(rv.mean, indices_or_sections=[index], axis=0)
 
-        x1_mid_z = AffineCond(linop1, CholeskyNormal(bias1, R1.T))
-
+        x1 = CholeskyNormal(bias1, R1.T)
         noise = CholeskyNormal(bias2 - G @ bias1, R2.T)
-        x1_mid_x2_and_z = SplitAffineCond(G, linop2 - G @ linop1, noise)
-        return x1_mid_z, x1_mid_x2_and_z
+        x1_mid_x2 = AffineCond(G, noise)
+        return x1, x1_mid_x2
 
     def cond_evaluate(x, /, cond):
         return CholeskyNormal(cond.linop @ x + cond.noise.mean, cond.noise.cholesky)
@@ -182,7 +189,7 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         rv_from_cholesky=rv_from_cholesky,
         rv_condition=rv_condition,
         rv_marginal=rv_marginal,
-        cond_factorise=cond_factorise,
+        rv_factorise=rv_factorise,
         cond_evaluate=cond_evaluate,
         get_F=get_F,
         rv_logpdf=rv_logpdf,
@@ -193,24 +200,21 @@ def impl_cov_based() -> Impl[CovNormal]:
     def rv_from_cholesky(m, c):
         return CovNormal(m, c @ c.T)
 
-    def cond_factorise(
-        cond: AffineCond, index: int
-    ) -> tuple[AffineCond, SplitAffineCond]:
-        cov1, cov2 = jnp.split(cond.noise.cov, indices_or_sections=[index], axis=0)
+    def rv_factorise(rv, index: int) -> tuple[AffineCond, SplitAffineCond]:
+        # Factorise ignoring the linops
+        cov1, cov2 = jnp.split(rv.cov, indices_or_sections=[index], axis=0)
         C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
         C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
 
         G = jnp.linalg.solve(C1.T, C12.T).T
         Z = C2 - G @ C1 @ G.T
 
-        bias1, bias2 = jnp.split(cond.noise.mean, indices_or_sections=[index], axis=0)
-        linop1, linop2 = jnp.split(cond.linop, indices_or_sections=[index], axis=0)
+        bias1, bias2 = jnp.split(rv.mean, indices_or_sections=[index], axis=0)
 
-        x1_mid_z = AffineCond(linop1, CovNormal(bias1, C1))
-        x1_mid_x2_and_z = SplitAffineCond(
-            G, linop2 - G @ linop1, CovNormal(bias2 - G @ bias1, Z)
-        )
-        return x1_mid_z, x1_mid_x2_and_z
+        x1 = CovNormal(bias1, C1)
+        noise2 = CovNormal(bias2 - G @ bias1, Z)
+        x2_mid_x1 = AffineCond(G, noise2)
+        return x1, x2_mid_x1
 
     def cond_evaluate(data, cond: AffineCond[CovNormal]) -> CovNormal:
         mean = cond.linop @ data + cond.noise.mean
@@ -248,7 +252,7 @@ def impl_cov_based() -> Impl[CovNormal]:
         rv_from_cholesky=rv_from_cholesky,
         rv_condition=rv_condition,
         rv_marginal=rv_marginal,
-        cond_factorise=cond_factorise,
+        rv_factorise=rv_factorise,
         cond_evaluate=cond_evaluate,
         get_F=get_F,
         rv_logpdf=rv_logpdf,
