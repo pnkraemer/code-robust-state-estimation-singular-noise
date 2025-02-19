@@ -5,56 +5,49 @@ import jax
 import time
 
 
-def main(seed=1, num_data=1500):
-    for impl, impl_name in [
-        (ckf.impl_cov_based(), "Cov-based"),
-        (ckf.impl_cholesky_based(), "Cholesky-based"),
-    ]:
+def main(seed=1, num_data=20):
+    cfgs = []
+    for d in [4]:
+        cfgs.append((d, d // 2, 0))
+        cfgs.append((d, d // 2, d // 4))
+        cfgs.append((d, d // 2, d // 2))
+
+    for x, y_sing, y_nonsing in cfgs:
+        dim = test_util.DimCfg(x=x, y_sing=y_sing, y_nonsing=y_nonsing)
         print()
-        print(impl_name)
-        key = jax.random.PRNGKey(seed)
-        key, subkey = jax.random.split(key, num=2)
-        dim = test_util.DimCfg(x=8, y_sing=8, y_nonsing=0)
-        (z, x_mid_z, y_mid_x), F, _y = test_util.model_random(
-            subkey, dim=dim, impl=impl
-        )
+        print(dim)
+        for impl, impl_name in [
+            (ckf.impl_cov_based(), "Cov-based"),
+            (ckf.impl_cholesky_based(), "Cholesky-based"),
+        ]:
+            print()
+            print("\t", impl_name)
+            print("\t =================")
 
-        # Assemble all Kalman filters
-
-        filter_conv = _filter_conventional(
-            impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x
-        )
-        filter_redu = _filter_reduced(
-            impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x, F_rank=F.shape[1]
-        )
-
-        for alg, name in [(filter_conv, "Conventional"), (filter_redu, "Reduced")]:
-            alg = jax.jit(alg)
-
+            key = jax.random.PRNGKey(seed)
             key, subkey = jax.random.split(key, num=2)
-            data_out = jax.random.normal(
-                subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
+            (z, x_mid_z, y_mid_x), F, _y = test_util.model_random(
+                subkey, dim=dim, impl=impl
             )
 
-            x0, xs, pdf = alg(data_out)
-            x0.mean.block_until_ready()
-            xs.mean.block_until_ready()
-            if impl_name == "Cov-based":
-                x0.cov.block_until_ready()
-                xs.cov.block_until_ready()
-            else:
-                x0.cholesky.block_until_ready()
-                xs.cholesky.block_until_ready()
-            ts = []
-            for _ in range(10):
+            # Assemble all Kalman filters
+
+            filter_conv = _filter_conventional(
+                impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x
+            )
+            filter_redu = _filter_reduced(
+                impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x, F_rank=F.shape[1]
+            )
+
+            for alg, name in [(filter_conv, "Conventional"), (filter_redu, "Reduced")]:
+                alg = jax.jit(alg)
+
                 key, subkey = jax.random.split(key, num=2)
                 data_out = jax.random.normal(
                     subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
                 )
 
-                t0 = time.perf_counter()
                 x0, xs, pdf = alg(data_out)
-                pdf.block_until_ready()
                 x0.mean.block_until_ready()
                 xs.mean.block_until_ready()
                 if impl_name == "Cov-based":
@@ -63,10 +56,29 @@ def main(seed=1, num_data=1500):
                 else:
                     x0.cholesky.block_until_ready()
                     xs.cholesky.block_until_ready()
-                t1 = time.perf_counter()
-                ts.append(t1 - t0)
-            ts = jnp.asarray(ts)
-            print(name, "\n\t", jnp.mean(ts), jnp.std(ts))
+                ts = []
+                t0_total = time.perf_counter()
+                while time.perf_counter() - t0_total < 1:
+                    key, subkey = jax.random.split(key, num=2)
+                    data_out = jax.random.normal(
+                        subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
+                    )
+
+                    t0 = time.perf_counter()
+                    x0, xs, pdf = alg(data_out)
+                    pdf.block_until_ready()
+                    x0.mean.block_until_ready()
+                    xs.mean.block_until_ready()
+                    if impl_name == "Cov-based":
+                        x0.cov.block_until_ready()
+                        xs.cov.block_until_ready()
+                    else:
+                        x0.cholesky.block_until_ready()
+                        xs.cholesky.block_until_ready()
+                    t1 = time.perf_counter()
+                    ts.append(t1 - t0)
+                ts = jnp.asarray(ts)
+                print(f"\t {name} (runs/s, high is goood) \t {1 / jnp.mean(ts):.1f} \t")
 
 
 def _filter_conventional(impl, z, x_mid_z, y_mid_x):

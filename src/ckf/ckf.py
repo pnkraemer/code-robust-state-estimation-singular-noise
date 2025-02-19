@@ -323,6 +323,7 @@ class ModelReduction:
 def model_reduction(F_rank, impl) -> ModelReduction:
     # todo: reduce duplication between the two prepare's and reduce's
     #  because currently, they're almost identical
+    # todo: remove rmatmul from trafo, because I think there is a bunch of unnecessary computation?
     def prepare_init(y_mid_x: AffineCond, x: T):
         """Like prepare(), but for Phi=0 which simplifies some of the calls."""
         # Extract F
