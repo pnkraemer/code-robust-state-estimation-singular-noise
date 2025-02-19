@@ -164,6 +164,11 @@ def test_logpdfs_consistent_across_impls(dim):
     assert jnp.allclose(logpdf1, logpdf2, atol=tol, rtol=tol)
 
 
+def _allclose(a, b):
+    tol = jnp.sqrt(jnp.finfo(a.dtype).eps)
+    return jnp.allclose(a, b, atol=tol, rtol=tol)
+
+
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_kalman_filter(impl):
     key = jax.random.PRNGKey(1)
@@ -172,34 +177,34 @@ def test_kalman_filter(impl):
     (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
     data_out = jax.random.normal(key2, shape=(20, dim.y_sing))
 
+    # Initialise
     x = z
     y_marg, bwd = impl.rv_condition(x, y_mid_x)
     logpdf_ref = impl.rv_logpdf(jnp.atleast_1d(data_out[0]), y_marg)
-    x = impl.cond_evaluate(jnp.atleast_1d(data_out[0]), bwd)
-    means, covs = [x.mean], [x.cov_dense()]
+    x0_ref = impl.cond_evaluate(jnp.atleast_1d(data_out[0]), bwd)
+    assert _allclose(x0_ref.mean[: dim.y_sing], data_out[0])
+    assert _allclose(x0_ref.cov_dense()[:, : dim.y_sing], 0.0)
+    assert _allclose(x0_ref.cov_dense()[: dim.y_sing, :], 0.0)
 
-    for d in data_out[1:]:
-        x = impl.rv_marginal(rv=x, cond=x_mid_z)
-        y, x = impl.rv_condition(rv=x, cond=y_mid_x)
-        x = impl.cond_evaluate(jnp.atleast_1d(d), cond=x)
-        logpdf_ref += impl.rv_logpdf(jnp.atleast_1d(d), y)
+    # Kalman filter iteration
+    def step(x_, d_):
+        x_ = impl.rv_marginal(rv=x_, cond=x_mid_z)
+        y_, x_ = impl.rv_condition(rv=x_, cond=y_mid_x)
+        x_ = impl.cond_evaluate(jnp.atleast_1d(d_), cond=x_)
+        logpdf_ = impl.rv_logpdf(jnp.atleast_1d(d_), y_)
+        return x_, (x_, logpdf_)
 
-        means.append(x.mean)
-        covs.append(x.cov_dense())
+    _, (xs_ref, logpdfs_ref) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
+    assert _allclose(xs_ref.mean[:, : dim.y_sing], data_out[1:])
+    assert _allclose(xs_ref.cov_dense()[:, :, : dim.y_sing], 0.0)
+    assert _allclose(xs_ref.cov_dense()[:, : dim.y_sing, :], 0.0)
 
-    means = jnp.stack(means)
-    covs = jnp.stack(covs)
-
-    i = dim.y_sing + dim.y_nonsing
-    assert jnp.allclose(means[:, :i], data_out)
-    assert jnp.allclose(covs[:, :i, :], 0.0, atol=1e-5)
-    assert jnp.allclose(covs[:, :, :i], 0.0, atol=1e-5)
-    means_ref, covs_ref = means, covs
-
+    # Reduce the model
     reduction = ckf.model_reduction(F_rank=F.shape[1], impl=impl)
     prepared_init = reduction.prepare_init(y_mid_x=y_mid_x, x=z)
     prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
 
+    # Initialise
     d = jnp.atleast_1d(data_out[0])
     y1, (x2, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce_init(
         d, prepared=prepared_init
@@ -208,46 +213,35 @@ def test_kalman_filter(impl):
     x2 = impl.cond_evaluate(y1, bwd)
     pdf1 = impl.rv_logpdf(y1, y1_marg)
     logpdf_reduced = pdf1 + pdf2
+    x0 = impl.rv_marginal(x2, cond=x_mid_x2)
+    assert _allclose(x0.mean, x0_ref.mean)
+    assert _allclose(x0.cov_dense(), x0_ref.cov_dense())
+    assert _allclose(logpdf_reduced, logpdf_ref)
 
-    xx = impl.rv_marginal(x2, cond=x_mid_x2)
-    means = [xx.mean]
-    covs = [xx.cov_dense()]
+    # Kalman filter iteration
 
-    for d in data_out[1:]:
-        d = jnp.atleast_1d(d)
-        y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, pdf2) = reduction.reduce(
-            d, hidden=x2, z_mid_hidden=x_mid_x2, prepared=prepared
+    def step(x_, d_):
+        x2_, x_mid_x2_ = x_
+        d_ = jnp.atleast_1d(d_)
+        y1_, (z_, x2_mid_z_, y1_mid_x2_), (x_mid_x2_, pdf2_) = reduction.reduce(
+            d_, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
         )
 
         # Run a single filter-condition step.
-        #
-        # To turn this into a smoother, run rv_condition() instead of rv_marginal
-        # which (due to some absorbing-logic) yields a x2-to-x2 conditional (small)
-        # instead of a x-to-x conditional (larger)
-        # todo: make this logic a bit simpler
-        x2 = impl.rv_marginal(z, x2_mid_z)
-        y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
-        x2 = impl.cond_evaluate(y1, bwd)
-        pdf1 = impl.rv_logpdf(y1, y1_marg)
+        x2_ = impl.rv_marginal(z_, x2_mid_z_)
+        y1_marg_, bwd_ = impl.rv_condition(x2_, y1_mid_x2_)
+        x2_ = impl.cond_evaluate(y1_, bwd_)
+        pdf1_ = impl.rv_logpdf(y1_, y1_marg_)
 
         # Save some quantities (not part of the simulation, just for testing)
-        xx = impl.rv_marginal(rv=x2, cond=x_mid_x2)
-        logpdf_reduced += pdf1 + pdf2
-        means.append(xx.mean)
-        covs.append(xx.cov_dense())
+        xx = impl.rv_marginal(rv=x2_, cond=x_mid_x2_)
+        logpdf_ = pdf1_ + pdf2_
+        return (x2_, x_mid_x2_), (xx, logpdf_)
 
-    means = jnp.stack(means)
-    covs = jnp.stack(covs)
-
-    tol = jnp.sqrt(jnp.finfo(means.dtype).eps)
-    assert jnp.allclose(logpdf_reduced, logpdf_ref)
-    assert jnp.allclose(means, means_ref, atol=tol, rtol=tol)
-    assert jnp.allclose(covs, covs_ref, atol=tol, rtol=tol)
-
-    i = dim.y_sing + dim.y_nonsing
-    assert jnp.allclose(means[:, :i], data_out, atol=tol, rtol=tol)
-    assert jnp.allclose(covs[:, :i, :], 0.0, atol=tol, rtol=tol)
-    assert jnp.allclose(covs[:, :, :i], 0.0, atol=tol, rtol=tol)
+    _, (xs, logpdfs) = jax.lax.scan(step, xs=data_out[1:], init=(x2, x_mid_x2))
+    assert _allclose(xs.mean, xs_ref.mean)
+    assert _allclose(xs.cov_dense(), xs_ref.cov_dense())
+    assert _allclose(logpdfs, logpdfs_ref)
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
@@ -315,12 +309,7 @@ def test_rts_smoother(impl):
             d, hidden=x2, z_mid_hidden=x_mid_x2, prepared=prepared
         )
 
-        # Run a single filter-condition step.
-        #
-        # To turn this into a smoother, run rv_condition() instead of rv_marginal
-        # which (due to some absorbing-logic) yields a x2-to-x2 conditional (small)
-        # instead of a x-to-x conditional (larger)
-        # todo: make this logic a bit simpler
+        # Run a single smoother step.
         x2, smoothing = impl.rv_condition(z, x2_mid_z)
         y1_marg, bwd = impl.rv_condition(x2, y1_mid_x2)
         x2 = impl.cond_evaluate(y1, bwd)

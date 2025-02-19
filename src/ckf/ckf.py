@@ -34,7 +34,13 @@ class CholeskyNormal:
         return CholeskyNormal(mean, cholesky)
 
     def cov_dense(self):
-        return self.cholesky @ self.cholesky.T
+        return CholeskyNormal._cov_dense_static(self.cholesky)
+
+    @staticmethod
+    def _cov_dense_static(chol):
+        if chol.ndim > 2:
+            return jax.vmap(CholeskyNormal._cov_dense_static)(chol)
+        return chol @ chol.T
 
 
 T = TypeVar("T", bound=(CholeskyNormal | CovNormal))
