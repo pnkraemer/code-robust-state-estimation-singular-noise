@@ -5,8 +5,6 @@ from ckf import ckf, test_util
 import jax
 import pytest_cases
 
-from typing import NamedTuple
-
 
 def case_impl_cov_based() -> ckf.Impl:
     return ckf.impl_cov_based()
@@ -235,15 +233,15 @@ def test_kalman_filter(impl):
 
 
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
-def test_kalman_smoother(impl, num_data=5):
+def test_rts_smoother(impl, num_data=5):
     key = jax.random.PRNGKey(1)
     key1, key2 = jax.random.split(key, num=2)
     dim = test_util.DimCfg(x=4, y_sing=3, y_nonsing=0)
     (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
     data_out = jax.random.normal(key2, shape=(num_data, dim.y_sing))
 
-    # Assemble a Kalman smoother
-    kalman = ckf.kalman_smoother(impl=impl)
+    # Assemble a RTS smoother
+    kalman = ckf.rts_smoother(impl=impl)
 
     # Kalman smoother iteration
 
@@ -283,7 +281,7 @@ def test_kalman_smoother(impl, num_data=5):
 
     def step(x2_and_cond, data):
         x2_, x_mid_x2_ = x2_and_cond
-        save = x_mid_x2_
+        save = x_mid_x2_  # careful which x_mid_x2 is returned!
         y1_, (z_, x2_mid_z_, y1_mid_x2_), (x_mid_x2_, pdf2_) = reduction.reduce(
             data, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
         )
@@ -317,4 +315,3 @@ def test_kalman_smoother(impl, num_data=5):
 
     assert _allclose(xs.mean, xs_ref.mean)
     assert _allclose(xs.cov_dense(), xs_ref.cov_dense())
-

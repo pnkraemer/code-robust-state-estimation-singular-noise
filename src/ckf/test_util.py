@@ -1,9 +1,8 @@
 """Testing and benchmarking utilities."""
 
 import jax.numpy as jnp
-from ckf import ckf, test_util
+from ckf import ckf
 import jax
-import pytest_cases
 
 from typing import NamedTuple
 
