@@ -72,12 +72,12 @@ def model_interpolation(key, *, dim: DimCfg, impl: ckf.Impl):
 
 def model_ivpsolve(*, dim, impl):
     m0 = jnp.zeros(shape=(dim.x,))
-    c0 = 1e-2*jax.scipy.linalg.hilbert(dim.x)
+    c0 = 1e-2 * jax.scipy.linalg.hilbert(dim.x)
     z = impl.rv_from_cholesky(m0, c0)
 
     linop = jnp.eye(dim.x)
     bias = jnp.zeros((dim.x,))
-    cov = 1e-2*jax.scipy.linalg.hilbert(dim.x)
+    cov = 1e-2 * jax.scipy.linalg.hilbert(dim.x)
     noise = impl.rv_from_cholesky(bias, cov)
     x_mid_z = ckf.AffineCond(linop, noise)
 

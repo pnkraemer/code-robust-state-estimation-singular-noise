@@ -13,17 +13,20 @@ import tqdm
 
 jax.config.update("jax_enable_x64", True)
 
-def main(num_data=500):
 
+def main(num_data=500):
     results = {}
     for name, impl_test in [
         ("Cholesky-based", ckf.impl_cholesky_based()),
         ("Cov-based (LU-solve)", ckf.impl_cov_based(solve_fun=jnp.linalg.solve)),
-        ("Cov-based (Cholesky-solve)", ckf.impl_cov_based(solve_fun=ckf.solve_fun_cholesky())),
+        (
+            "Cov-based (Cholesky-solve)",
+            ckf.impl_cov_based(solve_fun=ckf.solve_fun_cholesky()),
+        ),
     ]:
         print()
         results[name] = {}
-        for n in (range(1, 12, 1)):
+        for n in range(1, 12, 1):
             dim = test_util.DimCfg(x=n, y_sing=n // 2, y_nonsing=0)
 
             key = jax.random.PRNGKey(seed=1)
@@ -45,12 +48,9 @@ def main(num_data=500):
             print(f"n = {n} \tm = {dim.y_sing} \t{name}: \t{jnp.log10(mae):.1f}")
             results[name][f"$n={n}$, $m={dim.y_sing}$"] = float(jnp.log10(mae))
 
-
     path = pathlib.Path(__file__).parent.resolve()
     with open(f"{path}/data_errors.pkl", "wb") as f:
         pickle.dump(results, f)
-
-
 
 
 def smoother_unreduced(z, x_mid_z, y_mid_x, *, impl):

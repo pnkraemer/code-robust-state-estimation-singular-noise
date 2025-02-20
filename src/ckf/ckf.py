@@ -87,6 +87,7 @@ class Impl(Generic[T]):
     rv_condition: Callable[[T, AffineCond[T]], tuple[T, AffineCond[T]]]
     rv_marginal: Callable[[T, AffineCond[T]], T]
     rv_logpdf: Callable[[jax.Array, T], jax.Array]
+    rv_sample: Callable
 
     rv_factorise: Callable[[T, int], tuple[T, AffineCond[T]]]
     cond_evaluate: Callable[[jax.Array, AffineCond[T]], T]
@@ -199,6 +200,10 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         x1_mid_x2 = AffineCond(G, noise)
         return x1, x1_mid_x2
 
+    def rv_sample(key, rv):
+        xi = jax.random.normal(key, shape=(rv.cholesky.shape[1],))
+        return rv.mean + rv.cholesky @ xi
+
     def cond_evaluate(x, /, cond):
         return CholeskyNormal(cond.linop @ x + cond.noise.mean, cond.noise.cholesky)
 
@@ -227,6 +232,7 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         rv_condition=rv_condition,
         rv_marginal=rv_marginal,
         rv_factorise=rv_factorise,
+        rv_sample=rv_sample,
         cond_evaluate=cond_evaluate,
         get_F=get_F,
         rv_logpdf=rv_logpdf,
