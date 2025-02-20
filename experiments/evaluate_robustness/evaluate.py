@@ -4,40 +4,53 @@ import jax.numpy as jnp
 import jax
 import jax.numpy as jnp
 import pytest_cases
+import pathlib
 
 from ckf import ckf, test_util
+import pickle
+
+import tqdm
 
 jax.config.update("jax_enable_x64", True)
 
-# todo: make a table with these results (all three solvers)
-def main(num_data=100):
-    dt = 1 / num_data
-    for n in range(1, 40, 2):
-        dim = test_util.DimCfg(x=n, y_sing=n // 2, y_nonsing=0)
+def main(num_data=500):
 
-        key = jax.random.PRNGKey(seed=1)
-        data_out = jax.random.normal(key, shape=(num_data, dim.y_sing))
+    results = {}
+    for name, impl_test in [
+        ("Cholesky-based", ckf.impl_cholesky_based()),
+        ("Cov-based (LU-solve)", ckf.impl_cov_based(solve_fun=jnp.linalg.solve)),
+        ("Cov-based (Cholesky-solve)", ckf.impl_cov_based(solve_fun=ckf.solve_fun_cholesky())),
+    ]:
+        print()
+        results[name] = {}
+        for n in (range(1, 12, 1)):
+            dim = test_util.DimCfg(x=n, y_sing=n // 2, y_nonsing=0)
 
-        # Reference:
-        impl = ckf.impl_cholesky_based()
-        (z, x_mid_z, y_mid_x) = test_util.model_ivpsolve(dt=dt, dim=dim, impl=impl)
-        unreduced = smoother_unreduced(z, x_mid_z, y_mid_x, impl=impl)
-        x0 = unreduced(data_out)
-        ref = x0.cov_dense()
+            key = jax.random.PRNGKey(seed=1)
+            data_out = jax.random.normal(key, shape=(num_data, dim.y_sing))
 
-        # Compute both solvers
-        print(f"n = {n}")
-        for name, impl in [
-            ("Cov (via cho_solve)", ckf.impl_cov_based(solve_fun=ckf.solve_fun_cholesky())),
-            ("Cov (via solve)", ckf.impl_cov_based(solve_fun=jnp.linalg.solve)),
-            ("Chol", ckf.impl_cholesky_based()),
-        ]:
-            (z, x_mid_z, y_mid_x) = test_util.model_ivpsolve(dt=dt, dim=dim, impl=impl)
-            reduced = smoother_reduced(z, x_mid_z, y_mid_x, impl=impl, F_rank=0)
+            # Reference:
+            impl_ref = ckf.impl_cholesky_based()
+            (z, x_mid_z, y_mid_x) = test_util.model_ivpsolve(dim=dim, impl=impl_ref)
+            unreduced = smoother_unreduced(z, x_mid_z, y_mid_x, impl=impl_ref)
+            ref = unreduced(data_out)
+
+            # Compute test solver
+            (z, x_mid_z, y_mid_x) = test_util.model_ivpsolve(dim=dim, impl=impl_test)
+            reduced = smoother_reduced(z, x_mid_z, y_mid_x, impl=impl_test, F_rank=0)
             x0 = jax.jit(reduced)(data_out)
+            mae_mean = jnp.abs(x0.mean - ref.mean).mean()
+            mae_cov = jnp.abs(x0.cov_dense() - ref.cov_dense()).mean()
+            mae = mae_mean + mae_cov
+            print(f"n = {n} \tm = {dim.y_sing} \t{name}: \t{jnp.log10(mae):.1f}")
+            results[name][f"$n={n}$, $m={dim.y_sing}$"] = float(jnp.log10(mae))
 
-            mae = jnp.abs(x0.cov_dense() - ref).mean()
-            print(f"\t{name}: {mae:.1e}")
+
+    path = pathlib.Path(__file__).parent.resolve()
+    with open(f"{path}/data_errors.pkl", "wb") as f:
+        pickle.dump(results, f)
+
+
 
 
 def smoother_unreduced(z, x_mid_z, y_mid_x, *, impl):
