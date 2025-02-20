@@ -4,10 +4,11 @@ import matplotlib.pyplot as plt
 QR_CONST = 2 / 3
 MATVEC_PROP = 0
 
+
 def main():
     n = 100  # should cancel out
-    m = n // 2
-    r = n // 4
+    m = n / 4
+    r = n / 8
 
     reduced = flops_reduced(m=m, n=n, r=r)
     unreduced = flops_unreduced(m=m, n=n)

@@ -156,7 +156,7 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         # https://github.com/pnkraemer/probdiffeq/blob/main/probdiffeq/util/cholesky_util.py
 
         R = jnp.block([[R_YX, jnp.zeros((R_YX.shape[0], R_X.shape[1]))], [R_X_F, R_X]])
-        print(f"condition-QR of {R.shape}")
+        # print(f"condition-QR of {R.shape}")
         R = jnp.linalg.qr(R, mode="r")
 
         # ~R_{Y}
@@ -167,7 +167,7 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         R12 = R[:d_out, d_out:]
 
         # Implements G = R12.T @ np.linalg.inv(R_Y.T) in clever:
-        print(f"condition-Bwd.-Subst. of {R_Y.shape}")
+        # print(f"condition-Bwd.-Subst. of {R_Y.shape}")
         G = jax.scipy.linalg.solve_triangular(R_Y, R12, lower=False).T
 
         # ~R_{X \mid Y}
@@ -177,19 +177,19 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
     def rv_marginal(rv, cond):
         mean = cond.linop @ rv.mean + cond.noise.mean
         mtrx = jnp.concatenate([rv.cholesky.T @ cond.linop.T, cond.noise.cholesky.T])
-        print(f"marginal-QR of {mtrx.shape}")
+        # print(f"marginal-QR of {mtrx.shape}")
         R = jnp.linalg.qr(mtrx, mode="r")
         return CholeskyNormal(mean, R.T)
 
     def rv_factorise(
         rv: CholeskyNormal, index: int
     ) -> tuple[CholeskyNormal, AffineCond[CholeskyNormal]]:
-        print(f"factorise-QR of {rv.cholesky.T.shape}")
+        # print(f"factorise-QR of {rv.cholesky.T.shape}")
         R = jnp.linalg.qr(rv.cholesky.T, mode="r")
         R1 = R[:index, :index]
         R12 = R[:index, index:]
         R2 = R[index:, index:]
-        print(f"factorise-Bwd.-Subst. of {R1.shape}")
+        # print(f"factorise-Bwd.-Subst. of {R1.shape}")
         G = jax.scipy.linalg.solve_triangular(R1, R12, lower=False).T
 
         bias1, bias2 = jnp.split(rv.mean, indices_or_sections=[index], axis=0)
@@ -207,16 +207,15 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         return cond.noise.cholesky
 
     def rv_logpdf(u, /, rv):
-        return 1.
         # Ensure that the Cholesky factor is triangular
         # (it should be, but there is no quarantee).
-        print(f"logpdf-QR of {rv.cholesky.T.shape}")
+        # print(f"logpdf-QR of {rv.cholesky.T.shape}")
         cholesky = jnp.linalg.qr(rv.cholesky.T, mode="r").T
         diagonal = jnp.diagonal(cholesky, axis1=-1, axis2=-2)
         slogdet = jnp.sum(jnp.log(jnp.abs(diagonal)))
 
         dx = u - rv.mean
-        print(f"logpdf-Bwd.-Subst. of {cholesky.T.shape}")
+        # print(f"logpdf-Bwd.-Subst. of {cholesky.T.shape}")
         residual_white = jax.scipy.linalg.solve_triangular(cholesky.T, dx, trans="T")
         x1 = jnp.dot(residual_white, residual_white)
         x2 = 2.0 * slogdet
@@ -291,7 +290,6 @@ def impl_cov_based(solve_fun=cholesky_solve()) -> Impl[CovNormal]:
         return vecs @ jnp.diag(jnp.sqrt(vals))
 
     def rv_logpdf(u, rv):
-        return 1.
         cholesky = jnp.linalg.cholesky(rv.cov)
 
         diagonal = jnp.diagonal(cholesky, axis1=-1, axis2=-2)
@@ -325,7 +323,7 @@ def cond_split(cond: AffineCond, index: int) -> SplitAffineCond:
 def cond_invert_dirac(y: jax.Array, /, dirac_cond) -> jax.Array:
     A = dirac_cond.linop
     b = y - dirac_cond.noise.mean
-    print(f"invert_dirac-Bwd.-Subst. of {A.shape}")
+    # print(f"invert_dirac-Bwd.-Subst. of {A.shape}")
     # A is lower-triangular because it is A=S.T and S comes from a QR decomp.
     return jax.scipy.linalg.solve_triangular(A, b, lower=True)
 
@@ -348,14 +346,14 @@ def model_reduction(F_rank, impl) -> ModelReduction:
         F = impl.get_F(y_mid_x, F_rank=F_rank)
 
         # First QR iteration
-        print(f"prepare-init-QR of {F.shape}")
+        # print(f"prepare-init-QR of {F.shape}")
         V, R = jnp.linalg.qr(F, mode="complete")
         V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
         y1_mid_x = V1.T @ y_mid_x
         y2_mid_x = V2.T @ y_mid_x
 
         # Second QR iteration
-        print(f"prepare-init-QR of {y2_mid_x.linop.T.shape}")
+        # print(f"prepare-init-QR of {y2_mid_x.linop.T.shape}")
         W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
         W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
 
@@ -425,7 +423,7 @@ def model_reduction(F_rank, impl) -> ModelReduction:
 
         # First QR iteration
         # todo: don't always do that?
-        print(f"prepare-QR of {F.shape}")
+        # print(f"prepare-QR of {F.shape}")
         V, R = jnp.linalg.qr(F, mode="complete")
         V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
         y1_mid_x = V1.T @ y_mid_x
@@ -433,7 +431,7 @@ def model_reduction(F_rank, impl) -> ModelReduction:
 
         # Second QR iteration
         # todo: don't always do that?
-        print(f"prepare-QR of {y2_mid_x.linop.T.shape}")
+        # print(f"prepare-QR of {y2_mid_x.linop.T.shape}")
         W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
         W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
 
