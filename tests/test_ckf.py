@@ -15,19 +15,25 @@ def case_impl_cholesky_based() -> ckf.Impl:
 
 
 def case_dim_base() -> test_util.DimCfg:
-    return test_util.DimCfg(x=5, y_sing=2, y_nonsing=2)
+    # The base-case is (7, 2, 4) because we have arrays
+    # and matrices with shapes (2, 4, 7-2, 7-(4-2)),
+    # and we want all of those to be larger than 1
+    # because this way, all covariance matrices are
+    # "proper matrices" and we get punished for
+    # incorrect transposing, for example.
+    return test_util.DimCfg(x=7, y_sing=2, y_nonsing=4)
 
 
 def case_dim_nonsing_zero() -> test_util.DimCfg:
-    return test_util.DimCfg(x=5, y_sing=2, y_nonsing=0)
+    return test_util.DimCfg(x=7, y_sing=2, y_nonsing=4)
 
 
 def case_dim_sing_zero() -> test_util.DimCfg:
-    return test_util.DimCfg(x=5, y_sing=0, y_nonsing=2)
+    return test_util.DimCfg(x=7, y_sing=0, y_nonsing=4)
 
 
 def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
-    return test_util.DimCfg(x=5, y_sing=0, y_nonsing=0)
+    return test_util.DimCfg(x=7, y_sing=0, y_nonsing=0)
 
 
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
