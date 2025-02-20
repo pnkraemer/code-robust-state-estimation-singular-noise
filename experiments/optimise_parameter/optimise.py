@@ -6,9 +6,12 @@ from ckf import ckf, test_util
 import optax
 import tqdm
 import matplotlib.pyplot as plt
+import pathlib
+from tueplots import figsizes, fontsizes
 
 
 def main():
+    plt.rcParams.update(figsizes.jmlr2001(ncols=2) | fontsizes.jmlr2001())
     key = jax.random.PRNGKey(1)
     impl = ckf.impl_cholesky_based()
 
@@ -25,35 +28,44 @@ def main():
     loss = jax.jit(jax.value_and_grad(likelihood, has_aux=True))
 
     theta = jnp.zeros((3,))
-    optimizer = optax.adam(0.125)
+    optimizer = optax.adam(0.25)
     opt_state = optimizer.init(theta)
 
     layout = [["before", "after"]]
     fig, ax = plt.subplot_mosaic(layout, sharex=True, sharey=True)
 
+    # todo: add a halfway-through-optim subplot?
     (val, ms), grads = loss(theta, data_out)
     ax["before"].set_title("Before optimisation")
     ax["before"].plot(xs, data_out, ".", color="gray")
     ax["before"].plot(xs[1:], ms)
-
-    progressbar = tqdm.tqdm(range(1000))
-    progressbar.set_description(f"{1e-4:1e}")
+    progressbar = tqdm.tqdm(range(5_000))
+    progressbar.set_description(f"{1e4:1e}")
     for _ in progressbar:
-        (val, ms), grads = loss(theta, data_out)
-        updates, opt_state = optimizer.update(grads, opt_state)
-        theta = optax.apply_updates(theta, updates)
-        progressbar.set_description(f"{val:1e}")
-
-    ax["after"].set_title("After optimisation")
-    ax["after"].plot(xs, data_out, ".", color="gray")
-    ax["after"].plot(xs[1:], ms)
-    plt.show()
-    assert False
-
+        try:
+            (val, ms), grads = loss(theta, data_out)
+            updates, opt_state = optimizer.update(grads, opt_state)
+            theta = optax.apply_updates(theta, updates)
+            progressbar.set_description(f"{val:1e}")
+        except KeyboardInterrupt:
+            break
     print()
     print(theta)
     print()
     print(theta_true)
+
+    ax["after"].set_title("After optimisation")
+    ax["after"].plot(xs, data_out, ".", color="gray")
+    ax["after"].plot(xs[1:], ms)
+
+    ax["before"].set_ylabel("Data & Mean")
+    ax["before"].set_xlabel("Time $t$")
+    ax["after"].set_xlabel("Time $t$")
+
+    path = pathlib.Path(__file__).parent.resolve()
+    plt.savefig(f"{path}/figure.pdf")
+    plt.show()
+
 
 def sample(key, z, x_mid_z, y_mid_x, impl, num_samples=10):
     key, subkey = jax.random.split(key, num=2)
@@ -124,13 +136,13 @@ def model(theta, impl):
 
     linop = jnp.array([[1, theta[0], theta[1]], [0, 1, theta[2]], [0, 0, 1]])
     bias = jnp.zeros((3,))
-    cov = 1e-2*jnp.linalg.cholesky(jax.scipy.linalg.hilbert(3))
+    cov = jnp.linalg.cholesky(1e-2 * jax.scipy.linalg.hilbert(3))
     noise = impl.rv_from_cholesky(bias, cov)
     x_mid_z = ckf.AffineCond(linop, noise)
 
     linop = jnp.eye(2, 3)
     bias = jnp.zeros((2,))
-    F = jnp.array([[2.], [0.]])
+    F = jnp.array([[1.0], [0.0]])
     noise = impl.rv_from_cholesky(bias, F)
     y_mid_x = ckf.AffineCond(linop, noise)
     return z, x_mid_z, y_mid_x
