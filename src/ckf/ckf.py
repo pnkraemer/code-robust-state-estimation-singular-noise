@@ -207,6 +207,7 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         return cond.noise.cholesky
 
     def rv_logpdf(u, /, rv):
+        return 1.
         # Ensure that the Cholesky factor is triangular
         # (it should be, but there is no quarantee).
         print(f"logpdf-QR of {rv.cholesky.T.shape}")
@@ -290,6 +291,7 @@ def impl_cov_based(solve_fun=cholesky_solve()) -> Impl[CovNormal]:
         return vecs @ jnp.diag(jnp.sqrt(vals))
 
     def rv_logpdf(u, rv):
+        return 1.
         cholesky = jnp.linalg.cholesky(rv.cov)
 
         diagonal = jnp.diagonal(cholesky, axis1=-1, axis2=-2)
