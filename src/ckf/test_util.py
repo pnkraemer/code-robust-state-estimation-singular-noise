@@ -68,3 +68,23 @@ def model_interpolation(key, *, dim: DimCfg, impl: ckf.Impl):
     noise = impl.rv_from_cholesky(bias, F)
     y_mid_x = ckf.AffineCond(linop, noise)
     return (z, x_mid_z, y_mid_x), F
+
+
+def model_ivpsolve(dt, *, dim, impl):
+    m0 = jnp.zeros(shape=(dim.x,))
+    c0 = jnp.eye(dim.x)
+    z = impl.rv_from_cholesky(m0, c0)
+
+    linop = jnp.eye(dim.x)
+    bias = jnp.zeros((dim.x,))
+    cov = jax.scipy.linalg.hilbert(dim.x)
+    noise = impl.rv_from_cholesky(bias, cov)
+    x_mid_z = ckf.AffineCond(linop, noise)
+
+    dim_y_total = dim.y_sing + dim.y_nonsing
+    linop = jnp.eye(dim_y_total, dim.x)
+    bias = jnp.zeros((dim_y_total,))
+    F = jnp.zeros((dim_y_total, 0))
+    noise = impl.rv_from_cholesky(bias, F)
+    y_mid_x = ckf.AffineCond(linop, noise)
+    return (z, x_mid_z, y_mid_x)

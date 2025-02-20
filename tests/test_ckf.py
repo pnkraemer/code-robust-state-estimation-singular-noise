@@ -8,7 +8,7 @@ from ckf import ckf, test_util
 
 
 def case_impl_cov_based() -> ckf.Impl:
-    return ckf.impl_cov_based()
+    return ckf.impl_cov_based(solve_fun=jnp.linalg.solve)
 
 
 def case_impl_cholesky_based() -> ckf.Impl:
@@ -151,7 +151,7 @@ def test_model_reduce_logpdf(dim, impl):
 
 @pytest_cases.parametrize_with_cases("dim", cases=".", prefix="case_dim_")
 def test_logpdfs_consistent_across_impls(dim):
-    impl = ckf.impl_cov_based()
+    impl = ckf.impl_cov_based(solve_fun=jnp.linalg.solve)
     key = jax.random.PRNGKey(seed=3)
     (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
 

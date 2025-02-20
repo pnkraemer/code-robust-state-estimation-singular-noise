@@ -233,7 +233,7 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
     )
 
 
-def cholesky_solve():
+def solve_fun_cholesky():
     def solve(A, b):
         cho_factor = jax.scipy.linalg.cho_factor(A)
         return jax.scipy.linalg.cho_solve(cho_factor, b)
@@ -241,7 +241,7 @@ def cholesky_solve():
     return solve
 
 
-def impl_cov_based(solve_fun=cholesky_solve()) -> Impl[CovNormal]:
+def impl_cov_based(*, solve_fun) -> Impl[CovNormal]:
     def rv_from_cholesky(m, c):
         return CovNormal(m, c @ c.T)
 

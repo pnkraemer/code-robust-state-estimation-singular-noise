@@ -15,7 +15,16 @@ def main(seed=1, num_data=50, num_runs=3):
 
     data = {}
     # todo: run until size 2048 (or at least 1024)
-    for n in [4, 8, 16, 32, 64, 128, 256, 512]:  # Loop over the columns of the to-be-assembled table
+    for n in [
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+    ]:  # Loop over the columns of the to-be-assembled table
         data[f"$n={n}$"] = {}
         cfgs = [
             # These are the interesting configs:
