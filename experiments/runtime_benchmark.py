@@ -5,25 +5,29 @@ import jax
 import time
 
 
-def main(seed=1, num_data=50):
+# todo: make time-varying model for most general comparison
+# todo: absorb more compute into the prepare stage
+#  then follow up with:
+# todo: measure memory differences
+# todo: count QR decompositions and solves per step
+#  (to make an analytical case for performance differences)
+# todo: find a config where reduction makes sense beyond runtime
+#  eg numerical stability and smoothing? is this still the case for square-root codes?
+def main(seed=1, num_data=5):
     cfgs = []
-    for d in [32]:
+    # the higher the dimension, the bigger the gain.
+    # d=32 with y_sing=32 seems to be the breaking point
+    for d in [16]:
         cfgs.append((d, d // 2, 0))
-        cfgs.append((d, d // 2, d // 4))
-        cfgs.append((d, d // 2, d // 2))
 
     for x, y_sing, y_nonsing in cfgs:
         dim = test_util.DimCfg(x=x, y_sing=y_sing, y_nonsing=y_nonsing)
         print()
         print(dim)
         for impl, impl_name in [
-            (ckf.impl_cov_based(), "Cov-based"),
+            # (ckf.impl_cov_based(), "Cov-based"),
             (ckf.impl_cholesky_based(), "Cholesky-based"),
         ]:
-            print()
-            print("\t", impl_name)
-            print("\t =================")
-
             key = jax.random.PRNGKey(seed)
             key, subkey = jax.random.split(key, num=2)
             (z, x_mid_z, y_mid_x), F, _y = test_util.model_random(
@@ -39,9 +43,13 @@ def main(seed=1, num_data=50):
                 impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x, F_rank=F.shape[1]
             )
 
-            for alg, name in [(filter_conv, "Conventional"), (filter_redu, "Reduced")]:
-                alg = jax.jit(alg)
+            print()
+            print("\t", impl_name)
+            print("\t =================")
 
+            for alg, name in [(filter_conv, "Unreduced"), (filter_redu, "Reduced")]:
+                alg = jax.jit(alg)
+                print("Compile:")
                 key, subkey = jax.random.split(key, num=2)
                 data_out = jax.random.normal(
                     subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
@@ -56,9 +64,10 @@ def main(seed=1, num_data=50):
                 else:
                     x0.cholesky.block_until_ready()
                     xs.cholesky.block_until_ready()
+                print()
+                print("Execute:")
                 ts = []
-                t0_total = time.perf_counter()
-                while time.perf_counter() - t0_total < 1:
+                for _ in range(1):
                     key, subkey = jax.random.split(key, num=2)
                     data_out = jax.random.normal(
                         subkey, shape=(num_data, dim.y_sing + dim.y_nonsing)
@@ -78,37 +87,32 @@ def main(seed=1, num_data=50):
                     t1 = time.perf_counter()
                     ts.append(t1 - t0)
                 ts = jnp.asarray(ts)
-                print(f"\t {name} \t {jnp.mean(ts):.5f} \t (lower is better)")
+
+                print(f"\t {name} \t {jnp.amin(ts):.5f} \t (lower is better)")
 
 
 def _filter_conventional(impl, z, x_mid_z, y_mid_x):
-    kalman = ckf.rts_smoother(impl=impl)
+    kalman = ckf.kalman_filter(impl=impl)
 
     @jax.jit
     def apply(data_out):
+        print("Stepping")
         # Initialise
         x0_ref, logpdf_ref = kalman.init(data_out[0], x=z, y_mid_x=y_mid_x)
 
         # Kalman filter iteration
         def step(x, data):
-            x, logpdf, smooth = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
-            return x, (x, logpdf, smooth)
+            x, logpdf = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
+            return x, (x, logpdf)
+        _, (xs_ref, logpdfs_ref) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
 
-        x1_ref, (xs_ref, logpdfs_ref, smoothing) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
-
-        def smoothing_step(x, bwd):
-            x = impl.rv_marginal(x, bwd)
-            return x, x
-
-        _, xs_ref = jax.lax.scan(smoothing_step, xs=smoothing, init=x1_ref, reverse=True)
-
-        return x1_ref, xs_ref, jnp.sum(logpdfs_ref) + logpdf_ref
+        return x0_ref, xs_ref, jnp.sum(logpdfs_ref) + logpdf_ref
 
     return apply
 
 
 def _filter_reduced(impl, z, x_mid_z, y_mid_x, F_rank):
-    kalman = ckf.rts_smoother(impl=impl)
+    kalman = ckf.kalman_filter(impl=impl)
 
     reduction = ckf.model_reduction(F_rank=F_rank, impl=impl)
     prepared_init = reduction.prepare_init(y_mid_x=y_mid_x, x=z)
@@ -126,29 +130,20 @@ def _filter_reduced(impl, z, x_mid_z, y_mid_x, F_rank):
         # Kalman filter iteration
 
         def step(x2_and_cond, data):
+            print("Stepping")
             x2_, x_mid_x2_ = x2_and_cond
-            save = x_mid_x2_
             y1_, (z_, x2_mid_z_, y1_mid_x2_), (x_mid_x2_, pdf2_) = reduction.reduce(
                 data, hidden=x2_, z_mid_hidden=x_mid_x2_, prepared=prepared
             )
 
             # Run a single filter-condition step.
-            x2_, pdf1_, smooth = kalman.step(y1_, z=z_, x_mid_z=x2_mid_z_, y_mid_x=y1_mid_x2_)
+            x2_, pdf1_ = kalman.step(y1_, z=z_, x_mid_z=x2_mid_z_, y_mid_x=y1_mid_x2_)
 
             # Save some quantities (not part of the simulation, just for testing)
             logpdf_ = pdf1_ + pdf2_
-            return (x2_, x_mid_x2_), (x2_, logpdf_, smooth,save)
+            return (x2_, x_mid_x2_), (x2_, logpdf_)
 
-        (x2, _), (xs, logpdfs, smoothing, x2_mids) = jax.lax.scan(step, xs=data_out[1:], init=(x2, x_mid_x2))
-
-        def smoothing_step(x2_, smooth_and_cond):
-            smooth, x_mid_x2_ = smooth_and_cond
-            x2_ = impl.rv_marginal(x2_, smooth)
-            return x2_, x2_
-
-        _, xs = jax.lax.scan(
-            smoothing_step, xs=(smoothing, x2_mids), init=x2, reverse=True
-        )
+        _, (xs, logpdfs) = jax.lax.scan(step, xs=data_out[1:], init=(x2, x_mid_x2))
 
         return x2, xs, jnp.sum(logpdfs) + logpdf
 
