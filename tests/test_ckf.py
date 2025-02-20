@@ -1,9 +1,10 @@
 """Tests for constrained Kalman filtering."""
 
-import jax.numpy as jnp
-from ckf import ckf, test_util
 import jax
+import jax.numpy as jnp
 import pytest_cases
+
+from ckf import ckf, test_util
 
 
 def case_impl_cov_based() -> ckf.Impl:

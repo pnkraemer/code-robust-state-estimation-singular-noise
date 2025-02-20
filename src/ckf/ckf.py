@@ -1,10 +1,10 @@
 """Constrained Kalman filtering (-> "ckf") and Rauch--Tung-Striebel smoothing."""
 
-import jax.numpy as jnp
-import jax
 import dataclasses
-
 from typing import Callable, Generic, TypeVar
+
+import jax
+import jax.numpy as jnp
 
 
 @jax.tree_util.register_dataclass

@@ -1,10 +1,11 @@
 """Testing and benchmarking utilities."""
 
-import jax.numpy as jnp
-from ckf import ckf
-import jax
-
 from typing import NamedTuple
+
+import jax
+import jax.numpy as jnp
+
+from ckf import ckf
 
 
 class DimCfg(NamedTuple):
