@@ -43,7 +43,7 @@ def model_random(key, *, dim: DimCfg, impl: ckf.Impl):
     return (z, x_mid_z, y_mid_x), F, data
 
 
-# todo: give this model nontrivial dynamics and more control over dimensions
+# todo: give this model nontrivial dynamics and more control over dimensions?
 def model_interpolation(key, *, dim: DimCfg, impl: ckf.Impl):
     """Like model_random, but with an identity observation operator and F=0."""
     key, k1, k2 = jax.random.split(key, num=3)

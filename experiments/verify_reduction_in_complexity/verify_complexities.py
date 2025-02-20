@@ -9,12 +9,13 @@ import jax.numpy as jnp
 from ckf import ckf, test_util
 
 
-def main(seed=1, num_data=50, num_runs=1):
+def main(seed=1, num_data=50, num_runs=3):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
     data = {}
-    for n in [4, 8]:  # Loop over the columns of the to-be-assembled table
+    # todo: run until size 2048 (or at least 1024)
+    for n in [4, 8, 16, 32, 64, 128, 256, 512]:  # Loop over the columns of the to-be-assembled table
         data[f"$n={n}$"] = {}
         cfgs = [
             # These are the interesting configs:
@@ -46,7 +47,7 @@ def main(seed=1, num_data=50, num_runs=1):
 
             # Benchmark both filters
             results = {}
-            for alg, name in [(unreduced, "Unreduced"), (reduced, "Reduced")]:
+            for alg, name in [(unreduced, "unreduced"), (reduced, "reduced")]:
                 ts = benchmark_filter(data_out, alg=alg, num_runs=num_runs)
 
                 # Select the summary statistic from the runtimes (eg, fastest run)
@@ -54,7 +55,7 @@ def main(seed=1, num_data=50, num_runs=1):
                 print(f"\t{name}: \t {jnp.amin(ts):.1e}s \t (lower is better)")
 
             # Save the ratio of runtimes
-            ratio = results["Reduced"] / results["Unreduced"]
+            ratio = results["reduced"] / results["unreduced"]
             data[f"$n={n}$"][idx] = ratio
 
             print(f"\tRatio: \t\t {ratio:.2f} \t\t (lower is better)")
@@ -62,13 +63,13 @@ def main(seed=1, num_data=50, num_runs=1):
     # n and the cfgs are still in the namespace, and we use the most recent
     # values to make predictions. The predictions don't depend on precise
     # values of n, since we only look at the ratios.
-    data["Predicted"] = {}
+    data["Prediction"] = {}
     for idx, dim in cfgs:
         n, m, r = dim.x, dim.y_sing + dim.y_nonsing, dim.y_nonsing
         reduced = flops_reduced(m=m, n=n, r=r)
         unreduced = flops_unreduced(m=m, n=n)
         ratio = reduced / unreduced
-        data["Predicted"][idx] = ratio
+        data["Prediction"][idx] = ratio
 
     path = pathlib.Path(__file__).parent.resolve()
     with open(f"{path}/data_runtimes.pkl", "wb") as f:
