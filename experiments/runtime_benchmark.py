@@ -9,16 +9,14 @@ import time
 # todo: absorb more compute into the prepare stage
 #  then follow up with:
 # todo: measure memory differences
-# todo: count QR decompositions and solves per step
-#  (to make an analytical case for performance differences)
 # todo: find a config where reduction makes sense beyond runtime
 #  eg numerical stability and smoothing? is this still the case for square-root codes?
-def main(seed=1, num_data=200):
+def main(seed=1, num_data=20):
     cfgs = []
     # the higher the dimension, the bigger the gain.
     # d=32 with y_sing=32 seems to be the breaking point
-    for d in [1024]:
-        cfgs.append((d, d // 2, 0))
+    for d in [2048]:
+        cfgs.append((d, d // 4, d // 4))
 
     for x, y_sing, y_nonsing in cfgs:
         dim = test_util.DimCfg(x=x, y_sing=y_sing, y_nonsing=y_nonsing)

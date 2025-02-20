@@ -2,12 +2,12 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
 QR_CONST = 2 / 3
-
+MATVEC_PROP = 0
 
 def main():
-    n = 100  # doesn't matter, gets cancelled out
+    n = 100  # should cancel out
     m = n // 2
-    r = 0
+    r = n // 4
 
     reduced = flops_reduced(m=m, n=n, r=r)
     unreduced = flops_unreduced(m=m, n=n)
