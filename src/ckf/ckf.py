@@ -101,18 +101,13 @@ class Impl(Generic[T]):
         linop = split_cond.linop2
         return AffineCond(linop, noise)
 
-    def cond_combine(self, outer, inner):
+    @staticmethod
+    def cond_combine_dirac_normal(outer, inner):
         linop = outer.linop @ inner.linop
-        noise = self.rv_marginal(inner.noise, outer)
-        return AffineCond(linop, noise)
-
-    def cond_combine_outer_det(self, outer, inner):
-        linop = outer.linop @ inner.linop
-
         noise = outer.linop @ inner.noise + outer.noise.mean
         return AffineCond(linop, noise)
 
-    def cond_combine_inner_det(self, outer, inner):
+    def cond_combine_normal_dirac(self, outer, inner):
         linop = outer.linop @ inner.linop
         noise = self.cond_evaluate(inner.noise.mean, outer)
         return AffineCond(linop, noise)
@@ -307,8 +302,9 @@ def impl_cov_based(*, solve_fun) -> Impl[CovNormal]:
         x2 = 2.0 * slogdet
         x3 = u.size * jnp.log(jnp.pi * 2)
         return -0.5 * (x1 + x2 + x3)
-        # logpdf = jax.scipy.stats.multivariate_normal.logpdf
-        # return logpdf(u, rv.mean, rv.cov)
+
+    def not_implemented(*_a):
+        raise NotImplementedError
 
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
@@ -318,6 +314,7 @@ def impl_cov_based(*, solve_fun) -> Impl[CovNormal]:
         cond_evaluate=cond_evaluate,
         get_F=get_F,
         rv_logpdf=rv_logpdf,
+        rv_sample=not_implemented,
     )
 
 
@@ -461,7 +458,7 @@ def model_reduction(F_rank, impl) -> ModelReduction:
         x_mid_x1_and_x2 = cond_split(cond=cond, index=len(V2.T))
 
         # We only care about y2 | z, not about x1 | z, so we combine transformations
-        y2_mid_z = impl.cond_combine_outer_det(outer=y2_mid_x1, inner=x1_mid_z)
+        y2_mid_z = impl.cond_combine_dirac_normal(outer=y2_mid_x1, inner=x1_mid_z)
 
         # Return values:
         reduced_model = (y2_mid_z, x2_mid_x1_and_z, y1_mid_x1_and_x2)
@@ -500,8 +497,8 @@ def model_reduction(F_rank, impl) -> ModelReduction:
         #  x2_mid_x2prev, y2_mid_x2prev, which means
         #  that the model remains in "small space"
         # todo: z_mid_hidden is deterministic so we can save compute
-        x2_mid_z = impl.cond_combine_inner_det(outer=x2_mid_z, inner=z_mid_hidden)
-        y2_mid_z = impl.cond_combine_inner_det(outer=y2_mid_z, inner=z_mid_hidden)
+        x2_mid_z = impl.cond_combine_normal_dirac(outer=x2_mid_z, inner=z_mid_hidden)
+        y2_mid_z = impl.cond_combine_normal_dirac(outer=y2_mid_z, inner=z_mid_hidden)
         z = hidden
 
         # Fix y2 in the "prior" distribution
