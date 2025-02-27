@@ -7,11 +7,13 @@ import optax
 import tqdm
 import matplotlib.pyplot as plt
 import pathlib
-from tueplots import figsizes, fontsizes
+from tueplots import bundles, axes
 
 
 def main():
-    plt.rcParams.update(figsizes.jmlr2001(ncols=2) | fontsizes.jmlr2001())
+    plt.rcParams.update(bundles.icml2022(usetex=True, column="half"))
+    plt.rcParams.update(axes.lines())
+    plt.rcParams.update(axes.legend())
     key = jax.random.PRNGKey(1)
     impl = ckf.impl_cholesky_based()
 
@@ -31,14 +33,28 @@ def main():
     optimizer = optax.adam(0.25)
     opt_state = optimizer.init(theta)
 
-    layout = [["before", "after"]]
-    fig, ax = plt.subplot_mosaic(layout, sharex=True, sharey=True)
+    fig, ax = plt.subplots(dpi=200)
 
-    # todo: add a halfway-through-optim subplot?
     (val, ms), grads = loss(theta, data_out)
-    ax["before"].set_title("Before optimisation")
-    ax["before"].plot(xs, data_out, ".", color="gray")
-    ax["before"].plot(xs[1:], ms)
+
+    ax.plot(
+        xs,
+        data_out,
+        ".",
+        markeredgewidth=0.75,
+        markeredgecolor="black",
+        markerfacecolor="white",
+        alpha=0.5,
+        label="Observations",
+    )
+    ax.plot(
+        xs[1:],
+        ms[:, :2],
+        alpha=0.8,
+        linestyle="dashed",
+        color="C0",
+        label="Before optimisation",
+    )
     progressbar = tqdm.tqdm(range(5_000))
     progressbar.set_description(f"{1e4:1e}")
     for _ in progressbar:
@@ -54,13 +70,21 @@ def main():
     print()
     print(theta_true)
 
-    ax["after"].set_title("After optimisation")
-    ax["after"].plot(xs, data_out, ".", color="gray")
-    ax["after"].plot(xs[1:], ms)
+    ax.plot(
+        xs[1:],
+        ms[:, :2],
+        alpha=0.8,
+        linestyle="solid",
+        color="C1",
+        label="After optimisation",
+    )
 
-    ax["before"].set_ylabel("Data & Mean")
-    ax["before"].set_xlabel("Time $t$")
-    ax["after"].set_xlabel("Time $t$")
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys())
+
+    ax.set_ylabel(r"Observations \& mean estimate")
+    ax.set_xlabel("Time $t$")
 
     path = pathlib.Path(__file__).parent.resolve()
     plt.savefig(f"{path}/figure.pdf")

@@ -83,6 +83,9 @@ class SplitAffineCond(Generic[T]):
 
 @dataclasses.dataclass
 class Impl(Generic[T]):
+    # todo: implement rv_condition by calling rv_joint and rv_factorise
+    #  because currently, rv_condition and rv_factorise are very similar
+
     rv_from_cholesky: Callable[[jax.Array, jax.Array], T]
     rv_condition: Callable[[T, AffineCond[T]], tuple[T, AffineCond[T]]]
     rv_marginal: Callable[[T, AffineCond[T]], T]
