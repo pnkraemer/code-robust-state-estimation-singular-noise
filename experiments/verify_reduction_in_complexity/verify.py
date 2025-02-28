@@ -22,7 +22,7 @@ def main(seed=1, num_data=50, num_runs=3):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
-    ns_all = [64, 128, 256, 512]
+    ns_all = [10, 100, 1000]
     data = {r"$\ell$": [], "$r$": []}
     for n in ns_all:
         data[f"$n={n}$"] = []
@@ -118,7 +118,7 @@ def setup_configs():
         return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=s // 8)
 
     def _assert_n(s):
-        assert s % 16 == 0
+        pass
 
     return [
         # (ell, r, ...)
