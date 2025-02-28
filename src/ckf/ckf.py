@@ -541,7 +541,7 @@ def kalman_filter(impl) -> Estimator:
         return x0_ref, logpdf_ref
 
     def step(data, z, x_mid_z, y_mid_x):
-        x = impl.rv_marginal(rv=z, cond=x_mid_z)
+        x, _ = impl.rv_condition(rv=z, cond=x_mid_z)  # according to paper
         y_marg, bwd = impl.rv_condition(rv=x, cond=y_mid_x)
         x_cond = impl.cond_evaluate(data, cond=bwd)
         logpdf = impl.rv_logpdf(data, y_marg)

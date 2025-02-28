@@ -8,12 +8,21 @@ import jax.numpy as jnp
 
 from ckf import ckf, test_util
 
+import os
 
-def main(seed=1, num_data=1500, num_runs=5):
+# disable constant folding because it raises a bunch of warnings
+# during compilation
+os.environ["XLA_FLAGS"] = "--xla_disable_hlo_passes=constant_folding"
+
+# https://docs.jax.dev/en/latest/_autosummary/jax.clear_caches.html#jax.clear_caches
+jax.config.update("jax_enable_compilation_cache", False)
+
+
+def main(seed=1, num_data=50, num_runs=3):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
-    ns_all = [64]
+    ns_all = [64, 128, 256, 512]
     data = {r"$\ell$": [], "$r$": []}
     for n in ns_all:
         data[f"$n={n}$"] = []
@@ -63,7 +72,6 @@ def main(seed=1, num_data=1500, num_runs=5):
             # Save the ratio of runtimes
             ratio = results["reduced"] / results["unreduced"]
             data[f"$n={n}$"].append(ratio)
-
             print(f"\tRatio: \t\t {ratio:.4f}")
             print(f"\tPredicted: \t {predicted:.4f}")
 
@@ -85,36 +93,55 @@ def setup_configs():
         _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=0)
 
-    def dim_n4_n4(s):
+    def dim_n2_n4(s):
         _assert_n(s)
-        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 4)
+        return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=s // 4)
+
+    def dim_n4_n8(s):
+        _assert_n(s)
+        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 8)
+
+    def dim_n8_n16(s):
+        _assert_n(s)
+        return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=s // 16)
 
     def dim_n2_n2(s):
         _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=s // 2)
+
+    def dim_n4_n4(s):
+        _assert_n(s)
+        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 4)
 
     def dim_n8_n8(s):
         _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=s // 8)
 
     def _assert_n(s):
-        assert (s & (s - 1) == 0) and s != 0
-        assert s >= 8
+        assert s % 16 == 0
 
     return [
         # (ell, r, ...)
         ("$n/2$", "$0$", dim_n2_0),
         ("$n/4$", "$0$", dim_n4_0),
         # ("$n/8$", "$0$", dim_n8_0),
-        ("$n/2$", "$n/2$", dim_n2_n2),
+        # ("$n/2$", "$n/4$", dim_n2_n4),
+        # ("$n/4$", "$n/8$", dim_n4_n8),
+        # ("$n/8$", "$n/16$", dim_n8_n16),
+        # ("$n/2$", "$n/2$", dim_n2_n2),
         ("$n/4$", "$n/4$", dim_n4_n4),
-        # ("$n/8$", "$n/8$", dim_n8_n8),
+        ("$n/8$", "$n/8$", dim_n8_n8),
     ]
 
 
 def benchmark_filter(data_out, alg, num_runs):
+    # Clear caches: https://github.com/jax-ml/jax/issues/10828
+    jax.clear_caches()
+
     # Compile
     alg = jax.jit(alg)
+
+    data_out.block_until_ready()
 
     # Execute once to compile
     x1, pdf = alg(data_out)
@@ -140,14 +167,14 @@ def benchmark_filter(data_out, alg, num_runs):
 
 
 def flops_reduced(*, ell: int, n: int, r: int) -> float:
-    qr = n**3 + (n - ell) ** 3 + (n - ell + r ) ** 3
+    qr = n**3 + (n - ell) ** 3 + (n - ell + r) ** 3
     bwd_subst = (n - ell) * ell**2 + r**3
     return qr + bwd_subst
 
 
 def flops_unreduced(*, ell: int, r: int, n: int) -> float:
     m = ell + r
-    qr = n**3 + (n + m) ** 3
+    qr =  n**3 + (n + m) ** 3
     bwd_subst = n * m**2
     return qr + bwd_subst
 
@@ -194,8 +221,8 @@ def filter_reduced(impl, z, x_mid_z, y_mid_x, F_rank) -> Callable:
 
         # Kalman filter iteration
         scan_over = (data_out[1:], prepared)
-        (x2, x_mid_x2), logpdfs = jax.lax.scan(step, xs=scan_over, init=(x2, x_mid_x2))
-        return impl.rv_marginal(x2, x_mid_x2), jnp.sum(logpdfs) + logpdf
+        (x2, _), logpdfs = jax.lax.scan(step, xs=scan_over, init=(x2, x_mid_x2))
+        return x2, jnp.sum(logpdfs) + logpdf
 
     def step(x2_and_cond, data_and_model):
         x2, x_mid_x2 = x2_and_cond
