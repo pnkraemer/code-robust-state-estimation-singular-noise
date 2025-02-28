@@ -33,18 +33,18 @@ def main(num_data=500):
             # Generate data
             key = jax.random.PRNGKey(seed=1)
             impl_data = ckf.impl_cholesky_based()
-            (z, x_mid_z, y_mid_x) = test_util.model_hilbert(dim=dim, impl=impl_data)
-            sample_data = ckf.ssm_sample(impl=impl_data, num_data=num_data)
-            data_out = sample_data(key, z, x_mid_z, y_mid_x)
+            (z, x_mid_z, y_mid_x), _ = test_util.model_hilbert(dim=dim, impl=impl_data)
+            sample = ckf.ssm_sample_time_invariant(impl=impl_data, num_data=num_data)
+            data_out = sample(key, z, x_mid_z, y_mid_x)
 
             # Reference:
             impl_ref = ckf.impl_cholesky_based()
-            (z, x_mid_z, y_mid_x) = test_util.model_hilbert(dim=dim, impl=impl_ref)
+            (z, x_mid_z, y_mid_x), _ = test_util.model_hilbert(dim=dim, impl=impl_ref)
             unreduced = smoother_fixpt_unreduced(z, x_mid_z, y_mid_x, impl=impl_ref)
             ref = unreduced(data_out)
 
             # Compute test solver
-            (z, x_mid_z, y_mid_x) = test_util.model_hilbert(dim=dim, impl=impl_test)
+            (z, x_mid_z, y_mid_x), _ = test_util.model_hilbert(dim=dim, impl=impl_test)
             reduced = smoother_reduced(z, x_mid_z, y_mid_x, impl=impl_test, F_rank=0)
             x0 = jax.jit(reduced)(data_out)
 

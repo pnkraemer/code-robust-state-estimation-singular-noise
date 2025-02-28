@@ -22,8 +22,8 @@ def main():
     (z, x_mid_z, y_mid_x) = model(theta_true, impl=impl)
 
     key, subkey = jax.random.split(key, num=2)
-    data_out = sample(key, z, x_mid_z, y_mid_x, impl=impl, num_samples=100)
-
+    sample = ckf.ssm_sample_time_invariant(impl=impl, num_data=100)
+    data_out = sample(key, z, x_mid_z, y_mid_x)
     xs = jnp.linspace(0, 1, num=data_out.shape[0])
 
     likelihood = marginal_likelihood(impl=impl)
@@ -33,7 +33,7 @@ def main():
     optimizer = optax.adam(0.25)
     opt_state = optimizer.init(theta)
 
-    fig, ax = plt.subplots(dpi=200)
+    _fig, ax = plt.subplots(dpi=200)
 
     (val, ms), grads = loss(theta, data_out)
 
@@ -56,19 +56,15 @@ def main():
         label="Before optimisation",
     )
     progressbar = tqdm.tqdm(range(5_000))
-    progressbar.set_description(f"{1e4:1e}")
+    progressbar.set_description(f"Loss: {1e4:.1e}")
     for _ in progressbar:
         try:
             (val, ms), grads = loss(theta, data_out)
             updates, opt_state = optimizer.update(grads, opt_state)
             theta = optax.apply_updates(theta, updates)
-            progressbar.set_description(f"{val:1e}")
+            progressbar.set_description(f"Loss: {val:.1e}")
         except KeyboardInterrupt:
             break
-    print()
-    print(theta)
-    print()
-    print(theta_true)
 
     ax.plot(
         xs[1:],

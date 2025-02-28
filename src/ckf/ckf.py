@@ -160,7 +160,6 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         # https://github.com/pnkraemer/probdiffeq/blob/main/probdiffeq/util/cholesky_util.py
 
         R = jnp.block([[R_YX, jnp.zeros((R_YX.shape[0], R_X.shape[1]))], [R_X_F, R_X]])
-        # print(f"condition-QR of {R.shape}")
         R = jnp.linalg.qr(R, mode="r")
 
         # ~R_{Y}
@@ -171,7 +170,6 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
         R12 = R[:d_out, d_out:]
 
         # Implements G = R12.T @ np.linalg.inv(R_Y.T) in clever:
-        # print(f"condition-Bwd.-Subst. of {R_Y.shape}")
         G = jax.scipy.linalg.solve_triangular(R_Y, R12, lower=False).T
 
         # ~R_{X \mid Y}
@@ -181,19 +179,16 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
     def rv_marginal(rv, cond):
         mean = cond.linop @ rv.mean + cond.noise.mean
         mtrx = jnp.concatenate([rv.cholesky.T @ cond.linop.T, cond.noise.cholesky.T])
-        # print(f"marginal-QR of {mtrx.shape}")
         R = jnp.linalg.qr(mtrx, mode="r")
         return CholeskyNormal(mean, R.T)
 
     def rv_factorise(
         rv: CholeskyNormal, index: int
     ) -> tuple[CholeskyNormal, AffineCond[CholeskyNormal]]:
-        # print(f"factorise-QR of {rv.cholesky.T.shape}")
         R = jnp.linalg.qr(rv.cholesky.T, mode="r")
         R1 = R[:index, :index]
         R12 = R[:index, index:]
         R2 = R[index:, index:]
-        # print(f"factorise-Bwd.-Subst. of {R1.shape}")
         G = jax.scipy.linalg.solve_triangular(R1, R12, lower=False).T
 
         bias1, bias2 = jnp.split(rv.mean, indices_or_sections=[index], axis=0)
@@ -217,13 +212,11 @@ def impl_cholesky_based() -> Impl[CholeskyNormal]:
     def rv_logpdf(u, /, rv):
         # Ensure that the Cholesky factor is triangular
         # (it should be, but there is no quarantee).
-        # print(f"logpdf-QR of {rv.cholesky.T.shape}")
         cholesky = jnp.linalg.qr(rv.cholesky.T, mode="r").T
         diagonal = jnp.diagonal(cholesky, axis1=-1, axis2=-2)
         slogdet = jnp.sum(jnp.log(jnp.abs(diagonal)))
 
         dx = u - rv.mean
-        # print(f"logpdf-Bwd.-Subst. of {cholesky.T.shape}")
         residual_white = jax.scipy.linalg.solve_triangular(cholesky.T, dx, trans="T")
         x1 = jnp.dot(residual_white, residual_white)
         x2 = 2.0 * slogdet
@@ -257,7 +250,7 @@ def impl_cov_based(*, solve_fun) -> Impl[CovNormal]:
     def rv_factorise(rv, index: int) -> tuple[AffineCond, SplitAffineCond]:
         # Factorise ignoring the linops
         cov1, cov2 = jnp.split(rv.cov, indices_or_sections=[index], axis=0)
-        C1, C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
+        C1, _C21 = jnp.split(cov1, indices_or_sections=[index], axis=1)
         C12, C2 = jnp.split(cov2, indices_or_sections=[index], axis=1)
 
         G = solve_fun(C1.T, C12.T).T
@@ -311,8 +304,13 @@ def impl_cov_based(*, solve_fun) -> Impl[CovNormal]:
         x3 = u.size * jnp.log(jnp.pi * 2)
         return -0.5 * (x1 + x2 + x3)
 
-    def not_implemented(*_a):
-        raise NotImplementedError
+    def rv_sample(key, rv):
+        assert rv.cov.shape == () or rv.cov.shape[0] == rv.cov.shape[1]
+        if rv.cov.shape == ():
+            xi = jax.random.normal(key, shape=())
+            return rv.mean + jnp.sqrt(rv.cov) * xi
+        xi = jax.random.normal(key, shape=(rv.cov.shape[1],))
+        return rv.mean + jnp.sqrt(rv.cov) @ xi
 
     return Impl(
         rv_from_cholesky=rv_from_cholesky,
@@ -322,7 +320,7 @@ def impl_cov_based(*, solve_fun) -> Impl[CovNormal]:
         cond_evaluate=cond_evaluate,
         get_F=get_F,
         rv_logpdf=rv_logpdf,
-        rv_sample=not_implemented,
+        rv_sample=rv_sample,
     )
 
 
@@ -334,7 +332,6 @@ def cond_split(cond: AffineCond, index: int) -> SplitAffineCond:
 def cond_invert_dirac(y: jax.Array, /, dirac_cond) -> jax.Array:
     A = dirac_cond.linop
     b = y - dirac_cond.noise.mean
-    # print(f"invert_dirac-Bwd.-Subst. of {A.shape}")
     # A is lower-triangular because it is A=S.T and S comes from a QR decomp.
     return jax.scipy.linalg.solve_triangular(A, b, lower=True)
 
@@ -350,23 +347,20 @@ class ModelReduction:
 def model_reduction(F_rank, impl) -> ModelReduction:
     # todo: reduce duplication between the two prepare's and reduce's
     #  because currently, they're almost identical
-    # todo: remove rmatmul from trafo, because I think there is a bunch of unnecessary computation?
     def prepare_init(y_mid_x: AffineCond, x: T):
         """Like prepare(), but for Phi=0 which simplifies some of the calls."""
         # Extract F
         F = impl.get_F(y_mid_x, F_rank=F_rank)
 
         # First QR iteration
-        # print(f"prepare-init-QR of {F.shape}")
         V, R = jnp.linalg.qr(F, mode="complete")
         V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
         y1_mid_x = V1.T @ y_mid_x
         y2_mid_x = V2.T @ y_mid_x
 
         # Second QR iteration
-        # print(f"prepare-init-QR of {y2_mid_x.linop.T.shape}")
         W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
-        W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
+        W1, _W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
 
         # Factorise the z-to-x conditional
         x1_and_x2 = W.T @ x
@@ -433,18 +427,14 @@ def model_reduction(F_rank, impl) -> ModelReduction:
         F = impl.get_F(y_mid_x, F_rank=F_rank)
 
         # First QR iteration
-        # todo: don't always do that?
-        # print(f"prepare-QR of {F.shape}")
         V, R = jnp.linalg.qr(F, mode="complete")
         V1, V2 = jnp.split(V, indices_or_sections=[F_rank], axis=1)
         y1_mid_x = V1.T @ y_mid_x
         y2_mid_x = V2.T @ y_mid_x
 
         # Second QR iteration
-        # todo: don't always do that?
-        # print(f"prepare-QR of {y2_mid_x.linop.T.shape}")
         W, S = jnp.linalg.qr(y2_mid_x.linop.T, mode="complete")
-        W1, W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
+        W1, _W2 = jnp.split(W, indices_or_sections=[len(V2.T)], axis=1)
 
         # Factorise the z-to-x conditional
         x1_and_x2_mid_z = W.T @ x_mid_z
@@ -504,7 +494,6 @@ def model_reduction(F_rank, impl) -> ModelReduction:
         #  why? because this way, all x2_mid_z and y2_mid_z are actually
         #  x2_mid_x2prev, y2_mid_x2prev, which means
         #  that the model remains in "small space"
-        # todo: z_mid_hidden is deterministic so we can save compute
         x2_mid_z = impl.cond_combine_normal_dirac(outer=x2_mid_z, inner=z_mid_hidden)
         y2_mid_z = impl.cond_combine_normal_dirac(outer=y2_mid_z, inner=z_mid_hidden)
         z = hidden
@@ -541,7 +530,7 @@ def kalman_filter(impl) -> Estimator:
         return x0_ref, logpdf_ref
 
     def step(data, z, x_mid_z, y_mid_x):
-        x, _ = impl.rv_condition(rv=z, cond=x_mid_z)  # according to paper
+        x, _ = impl.rv_condition(rv=z, cond=x_mid_z)
         y_marg, bwd = impl.rv_condition(rv=x, cond=y_mid_x)
         x_cond = impl.cond_evaluate(data, cond=bwd)
         logpdf = impl.rv_logpdf(data, y_marg)
@@ -567,7 +556,7 @@ def rts_smoother(impl) -> Estimator:
     return Estimator(init=init, step=step)
 
 
-def ssm_sample(impl, *, num_data):
+def ssm_sample_time_invariant(impl, *, num_data):
     def sample(key, z, x_mid_z, y_mid_x):
         key, subkey = jax.random.split(key, num=2)
         x0 = impl.rv_sample(subkey, z)

@@ -41,7 +41,8 @@ def case_dim_sing_and_nonsing_zero() -> test_util.DimCfg:
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_shapes(impl, dim):
     key = jax.random.PRNGKey(seed=3)
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
+    tmp = test_util.model_random_time_invariant(key, dim=dim, impl=impl)
+    (z, x_mid_z, y_mid_x), F, y = tmp
 
     # Start reducing the model
     reduction = ckf.model_reduction(F_rank=dim.y_nonsing, impl=impl)
@@ -73,7 +74,8 @@ def test_model_reduce_shapes(impl, dim):
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_values(dim, impl):
     key = jax.random.PRNGKey(seed=3)
-    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
+    tmp = test_util.model_random_time_invariant(key, dim=dim, impl=impl)
+    (x, x_mid_z, y_mid_x), F, y = tmp
 
     # Reference (initialisation):
     _, bwd = impl.rv_condition(x, cond=y_mid_x)
@@ -113,7 +115,8 @@ def test_model_reduce_values(dim, impl):
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_model_reduce_logpdf(dim, impl):
     key = jax.random.PRNGKey(seed=3)
-    (x, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
+    tmp = test_util.model_random_time_invariant(key, dim=dim, impl=impl)
+    (x, x_mid_z, y_mid_x), F, y = tmp
 
     # Reference (initialisation):
     y_marg, bwd = impl.rv_condition(x, cond=y_mid_x)
@@ -153,14 +156,16 @@ def test_model_reduce_logpdf(dim, impl):
 def test_logpdfs_consistent_across_impls(dim):
     impl = ckf.impl_cov_based(solve_fun=jnp.linalg.solve)
     key = jax.random.PRNGKey(seed=3)
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
+    tmp = test_util.model_random_time_invariant(key, dim=dim, impl=impl)
+    (z, x_mid_z, y_mid_x), F, y = tmp
 
     ref_x = impl.rv_marginal(rv=z, cond=x_mid_z)
     y_marg, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
     logpdf1 = impl.rv_logpdf(y, y_marg)
 
     impl = ckf.impl_cholesky_based()
-    (z, x_mid_z, y_mid_x), F, y = test_util.model_random(key, dim=dim, impl=impl)
+    tmp = test_util.model_random_time_invariant(key, dim=dim, impl=impl)
+    (z, x_mid_z, y_mid_x), F, y = tmp
     ref_x = impl.rv_marginal(rv=z, cond=x_mid_z)
     y_marg, ref_backward = impl.rv_condition(rv=ref_x, cond=y_mid_x)
     logpdf2 = impl.rv_logpdf(y, y_marg)
@@ -177,10 +182,9 @@ def _allclose(a, b):
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_kalman_filter(impl):
     key = jax.random.PRNGKey(1)
-    key1, key2 = jax.random.split(key, num=2)
-    dim = test_util.DimCfg(x=4, y_sing=3, y_nonsing=0)
-    (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
-    data_out = jax.random.normal(key2, shape=(20, dim.y_sing))
+    dim = test_util.DimCfg(x=3, y_sing=2, y_nonsing=0)
+    (z, x_mid_z, y_mid_x), F = test_util.model_hilbert(dim=dim, impl=impl)
+    data_out = jax.random.normal(key, shape=(20, dim.y_sing))
 
     # Assemble a Kalman filter
     kalman = ckf.kalman_filter(impl=impl)
@@ -242,10 +246,9 @@ def test_kalman_filter(impl):
 @pytest_cases.parametrize_with_cases("impl", cases=".", prefix="case_impl_")
 def test_rts_smoother(impl, num_data=5):
     key = jax.random.PRNGKey(1)
-    key1, key2 = jax.random.split(key, num=2)
-    dim = test_util.DimCfg(x=4, y_sing=3, y_nonsing=0)
-    (z, x_mid_z, y_mid_x), F = test_util.model_interpolation(key1, dim=dim, impl=impl)
-    data_out = jax.random.normal(key2, shape=(num_data, dim.y_sing))
+    dim = test_util.DimCfg(x=3, y_sing=2, y_nonsing=0)
+    (z, x_mid_z, y_mid_x), F = test_util.model_hilbert(dim=dim, impl=impl)
+    data_out = jax.random.normal(key, shape=(num_data, dim.y_sing))
 
     # Assemble a RTS smoother
     kalman = ckf.rts_smoother(impl=impl)

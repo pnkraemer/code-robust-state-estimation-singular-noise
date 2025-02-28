@@ -14,7 +14,7 @@ class DimCfg(NamedTuple):
     y_nonsing: int
 
 
-def model_random(key, *, dim: DimCfg, impl: ckf.Impl, num_data: int):
+def model_random_time_varying(key, *, dim: DimCfg, impl: ckf.Impl, num_data: int):
     """A randomly populated state-space model with random data."""
     dim_y_total = dim.y_sing + dim.y_nonsing
     assert dim.x >= dim_y_total
@@ -26,26 +26,14 @@ def model_random(key, *, dim: DimCfg, impl: ckf.Impl, num_data: int):
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
     linop = jax.random.normal(k1, shape=(num_data - 1, dim.x, dim.x))
-    bias = jax.random.normal(
-        k2,
-        shape=(
-            num_data - 1,
-            dim.x,
-        ),
-    )
+    bias = jax.random.normal(k2, shape=(num_data - 1, dim.x))
     cov = jax.random.normal(k3, shape=(num_data - 1, dim.x, dim.x))
     noise = impl.rv_from_cholesky(bias, cov)
     x_mid_z = ckf.AffineCond(linop, noise)
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
     linop = jax.random.normal(k1, shape=(num_data, dim_y_total, dim.x))
-    bias = jax.random.normal(
-        k2,
-        shape=(
-            num_data,
-            dim_y_total,
-        ),
-    )
+    bias = jax.random.normal(k2, shape=(num_data, dim_y_total))
     F = jax.random.normal(k3, shape=(num_data, dim_y_total, dim.y_nonsing))
     noise = jax.vmap(impl.rv_from_cholesky)(bias, F)
     y_mid_x = ckf.AffineCond(linop, noise)
@@ -56,31 +44,33 @@ def model_random(key, *, dim: DimCfg, impl: ckf.Impl, num_data: int):
     return (z, x_mid_z, y_mid_x), F, data
 
 
-# todo: give this model nontrivial dynamics and more control over dimensions?
-def model_interpolation(key, *, dim: DimCfg, impl: ckf.Impl):
-    """Like model_random, but with an identity observation operator and F=0."""
+def model_random_time_invariant(key, *, dim: DimCfg, impl: ckf.Impl):
+    """A randomly populated state-space model with random data."""
+    dim_y_total = dim.y_sing + dim.y_nonsing
+    assert dim.x >= dim_y_total
+
     key, k1, k2 = jax.random.split(key, num=3)
-    m0 = jax.random.normal(k1, shape=(dim.x,)) / dim.x
-    c0 = jax.random.normal(k2, shape=(dim.x, dim.x)) / dim.x
+    m0 = jax.random.normal(k1, shape=(dim.x,))
+    c0 = jax.random.normal(k2, shape=(dim.x, dim.x))
     z = impl.rv_from_cholesky(m0, c0)
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
-    linop = jax.random.normal(k1, shape=(dim.x, dim.x)) / dim.x
-    bias = jax.random.normal(k2, shape=(dim.x,)) / dim.x
-    cov = jax.random.normal(k3, shape=(dim.x, dim.x)) / dim.x
+    linop = jax.random.normal(k1, shape=(dim.x, dim.x))
+    bias = jax.random.normal(k2, shape=(dim.x,))
+    cov = jax.random.normal(k3, shape=(dim.x, dim.x))
     noise = impl.rv_from_cholesky(bias, cov)
     x_mid_z = ckf.AffineCond(linop, noise)
 
     key, k1, k2, k3 = jax.random.split(key, num=4)
-    dim_y_total = dim.y_sing + dim.y_nonsing
-    assert dim.x >= dim_y_total
-
-    linop = jnp.eye(dim_y_total, dim.x)
-    bias = jnp.zeros((dim_y_total,))
+    linop = jax.random.normal(k1, shape=(dim_y_total, dim.x))
+    bias = jax.random.normal(k2, shape=(dim_y_total,))
     F = jax.random.normal(k3, shape=(dim_y_total, dim.y_nonsing))
     noise = impl.rv_from_cholesky(bias, F)
     y_mid_x = ckf.AffineCond(linop, noise)
-    return (z, x_mid_z, y_mid_x), F
+
+    key, subkey = jax.random.split(key, num=2)
+    y = jax.random.normal(key, shape=(dim.y_sing + dim.y_nonsing,))
+    return (z, x_mid_z, y_mid_x), F, y
 
 
 def model_hilbert(*, dim, impl):
@@ -100,4 +90,4 @@ def model_hilbert(*, dim, impl):
     F = jnp.zeros((dim_y_total, 0))
     noise = impl.rv_from_cholesky(bias, F)
     y_mid_x = ckf.AffineCond(linop, noise)
-    return (z, x_mid_z, y_mid_x)
+    return (z, x_mid_z, y_mid_x), F

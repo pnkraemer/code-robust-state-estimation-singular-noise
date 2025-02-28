@@ -22,7 +22,7 @@ def main(seed=1, num_data=50, num_runs=3):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
-    ns_all = [10, 100, 1000]
+    ns_all = [10, 100]
     data = {r"$\ell$": [], "$r$": []}
     for n in ns_all:
         data[f"$n={n}$"] = []
@@ -47,10 +47,10 @@ def main(seed=1, num_data=50, num_runs=3):
             dim = dim_fun(n)
             print(dim)
             key, subkey = jax.random.split(key, num=2)
-            model_random = test_util.model_random(
+            tmp = test_util.model_random_time_varying(
                 subkey, dim=dim, impl=impl, num_data=num_data
             )
-            (z, x_mid_z, y_mid_x), F, data_out = model_random
+            (z, x_mid_z, y_mid_x), F, data_out = tmp
 
             # Assemble all Kalman filters
             unreduced = filter_unreduced(
@@ -89,26 +89,6 @@ def setup_configs():
         _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=0)
 
-    def dim_n8_0(s):
-        _assert_n(s)
-        return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=0)
-
-    def dim_n2_n4(s):
-        _assert_n(s)
-        return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=s // 4)
-
-    def dim_n4_n8(s):
-        _assert_n(s)
-        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 8)
-
-    def dim_n8_n16(s):
-        _assert_n(s)
-        return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=s // 16)
-
-    def dim_n2_n2(s):
-        _assert_n(s)
-        return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=s // 2)
-
     def dim_n4_n4(s):
         _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 4)
@@ -124,11 +104,6 @@ def setup_configs():
         # (ell, r, ...)
         ("$n/2$", "$0$", dim_n2_0),
         ("$n/4$", "$0$", dim_n4_0),
-        # ("$n/8$", "$0$", dim_n8_0),
-        # ("$n/2$", "$n/4$", dim_n2_n4),
-        # ("$n/4$", "$n/8$", dim_n4_n8),
-        # ("$n/8$", "$n/16$", dim_n8_n16),
-        # ("$n/2$", "$n/2$", dim_n2_n2),
         ("$n/4$", "$n/4$", dim_n4_n4),
         ("$n/8$", "$n/8$", dim_n8_n8),
     ]
@@ -174,7 +149,7 @@ def flops_reduced(*, ell: int, n: int, r: int) -> float:
 
 def flops_unreduced(*, ell: int, r: int, n: int) -> float:
     m = ell + r
-    qr =  n**3 + (n + m) ** 3
+    qr = n**3 + (n + m) ** 3
     bwd_subst = n * m**2
     return qr + bwd_subst
 
