@@ -70,7 +70,7 @@ def model_interpolation(key, *, dim: DimCfg, impl: ckf.Impl):
     return (z, x_mid_z, y_mid_x), F
 
 
-def model_ivpsolve(*, dim, impl):
+def model_hilbert(*, dim, impl):
     m0 = jnp.zeros(shape=(dim.x,))
     c0 = 1e-2 * jax.scipy.linalg.hilbert(dim.x)
     z = impl.rv_from_cholesky(m0, c0)
