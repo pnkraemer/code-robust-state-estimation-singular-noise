@@ -9,11 +9,11 @@ import jax.numpy as jnp
 from ckf import ckf, test_util
 
 
-def main(seed=1, num_data=50, num_runs=3):
+def main(seed=1, num_data=1500, num_runs=5):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
-    ns_all = [32, 64, 128]
+    ns_all = [64]
     data = {r"$\ell$": [], "$r$": []}
     for n in ns_all:
         data[f"$n={n}$"] = []
@@ -28,10 +28,9 @@ def main(seed=1, num_data=50, num_runs=3):
         data["$r$"].append(r)
 
         # Predict ratio
-        dim = dim_fun(10)  # value cancels out so doesn't matter
-        n, m, r = dim.x, dim.y_sing + dim.y_nonsing, dim.y_nonsing
-        reduced = flops_reduced(m=m, n=n, r=r)
-        unreduced = flops_unreduced(m=m, n=n)
+        dim = dim_fun(512)  # value cancels out so doesn't matter
+        reduced = flops_reduced(n=dim.x, ell=dim.y_sing, r=dim.y_nonsing)
+        unreduced = flops_unreduced(n=dim.x, ell=dim.y_sing, r=dim.y_nonsing)
         predicted = reduced / unreduced
         data["Prediction"].append(predicted)
 
@@ -65,8 +64,8 @@ def main(seed=1, num_data=50, num_runs=3):
             ratio = results["reduced"] / results["unreduced"]
             data[f"$n={n}$"].append(ratio)
 
-            print(f"\tRatio: \t\t {ratio:.2f}")
-            print(f"\tPredicted: \t {predicted:.2f}")
+            print(f"\tRatio: \t\t {ratio:.4f}")
+            print(f"\tPredicted: \t {predicted:.4f}")
 
     path = pathlib.Path(__file__).parent.resolve()
     with open(f"{path}/data_runtimes.pkl", "wb") as f:
@@ -74,30 +73,42 @@ def main(seed=1, num_data=50, num_runs=3):
 
 
 def setup_configs():
-    def dim_n_minus_1_0(s):
-        return test_util.DimCfg(x=s, y_sing=s - 1, y_nonsing=0)
-
     def dim_n2_0(s):
+        _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=0)
 
-    def dim_n4_n4(s):
-        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 4)
-
     def dim_n4_0(s):
+        _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=0)
 
+    def dim_n8_0(s):
+        _assert_n(s)
+        return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=0)
+
+    def dim_n4_n4(s):
+        _assert_n(s)
+        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 4)
+
+    def dim_n2_n2(s):
+        _assert_n(s)
+        return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=s // 2)
+
     def dim_n8_n8(s):
+        _assert_n(s)
         return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=s // 8)
 
-    def dim_nogain_n0_n4(s):
-        return test_util.DimCfg(x=s, y_sing=0, y_nonsing=s // 4)
+    def _assert_n(s):
+        assert (s & (s - 1) == 0) and s != 0
+        assert s >= 8
 
     return [
-        ("$n-1$", "$0$", dim_n_minus_1_0),
+        # (ell, r, ...)
         ("$n/2$", "$0$", dim_n2_0),
-        ("$n/4$", "$n/4$", dim_n4_n4),
         ("$n/4$", "$0$", dim_n4_0),
-        ("$n/8$", "$n/8$", dim_n8_n8),
+        # ("$n/8$", "$0$", dim_n8_0),
+        ("$n/2$", "$n/2$", dim_n2_n2),
+        ("$n/4$", "$n/4$", dim_n4_n4),
+        # ("$n/8$", "$n/8$", dim_n8_n8),
     ]
 
 
@@ -128,16 +139,17 @@ def benchmark_filter(data_out, alg, num_runs):
     return jnp.asarray(ts)
 
 
-def flops_reduced(m: int, n: int, r: int) -> float:
-    qr = n**3 + 2 * (n - m + r) ** 3 + (n - m + 2 * r) ** 3
-    bwd_subst = (n - m + r) * (m - r) ** 2 + r**3
-    return 2 / 3 * qr + bwd_subst
+def flops_reduced(*, ell: int, n: int, r: int) -> float:
+    qr = n**3 + (n - ell) ** 3 + (n - ell + r ) ** 3
+    bwd_subst = (n - ell) * ell**2 + r**3
+    return qr + bwd_subst
 
 
-def flops_unreduced(m: int, n: int) -> float:
-    qr = 2 * n**3 + (n + m) ** 3
+def flops_unreduced(*, ell: int, r: int, n: int) -> float:
+    m = ell + r
+    qr = n**3 + (n + m) ** 3
     bwd_subst = n * m**2
-    return 2 / 3 * qr + bwd_subst
+    return qr + bwd_subst
 
 
 def filter_unreduced(impl, z, x_mid_z, y_mid_x) -> Callable:

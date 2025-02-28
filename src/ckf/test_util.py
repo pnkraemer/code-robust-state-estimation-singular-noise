@@ -51,7 +51,7 @@ def model_random(key, *, dim: DimCfg, impl: ckf.Impl, num_data: int):
     y_mid_x = ckf.AffineCond(linop, noise)
 
     key, subkey = jax.random.split(key, num=2)
-    sample_data = ckf.ssm_sample_time_varying(impl=impl, num_data=num_data)
+    sample_data = ckf.ssm_sample_time_varying(impl=impl)
     data = sample_data(key, z, x_mid_z, y_mid_x)
     return (z, x_mid_z, y_mid_x), F, data
 
