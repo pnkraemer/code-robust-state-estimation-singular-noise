@@ -5,6 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ckf"
 version = "0.0.1"
+dependencies = [
+    # Assumes JAX is installed...
+    "matplotlib",
+    "tueplots",
+    "optax",
+    "tqdm",
+    "pandas",
+    "pytest",
+    "pytest_cases",
+]
+
 
 [tool.setuptools.packages.find]
 where = ["src/"]
