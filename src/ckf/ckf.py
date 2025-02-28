@@ -110,6 +110,11 @@ class Impl(Generic[T]):
         noise = outer.linop @ inner.noise + outer.noise.mean
         return AffineCond(linop, noise)
 
+    def cond_combine(self, outer, inner):
+        linop = outer.linop @ inner.linop
+        noise = self.rv_marginal(inner.noise, outer)
+        return AffineCond(linop, noise)
+
     def cond_combine_normal_dirac(self, outer, inner):
         linop = outer.linop @ inner.linop
         noise = self.cond_evaluate(inner.noise.mean, outer)

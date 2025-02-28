@@ -34,7 +34,7 @@ def main(num_data=500):
             # Reference:
             impl_ref = ckf.impl_cholesky_based()
             (z, x_mid_z, y_mid_x) = test_util.model_hilbert(dim=dim, impl=impl_ref)
-            unreduced = smoother_unreduced(z, x_mid_z, y_mid_x, impl=impl_ref)
+            unreduced = smoother_fixpt_unreduced(z, x_mid_z, y_mid_x, impl=impl_ref)
             ref = unreduced(data_out)
 
             # Compute test solver
@@ -54,24 +54,29 @@ def main(num_data=500):
         pickle.dump(results, f)
 
 
-# todo: make into fixed-point smoother
-def smoother_unreduced(z, x_mid_z, y_mid_x, *, impl):
+def smoother_fixpt_unreduced(z, x_mid_z, y_mid_x, *, impl):
     kalman = ckf.rts_smoother(impl=impl)
 
     def smooth(data_out):
         d0, ds = data_out[0], data_out[1:]
         x0, _ = kalman.init(d0, x=z, y_mid_x=y_mid_x)
-        xx, (_, bwd_dens) = jax.lax.scan(step_fwd, xs=ds, init=x0)
-        x_sm, _ = jax.lax.scan(step_bwd, xs=bwd_dens, init=xx, reverse=True)
-        return x_sm
 
-    def step_fwd(x, data):
+        init = (x0, _identity_like(x0))
+        (x1, bwd_density), _ = jax.lax.scan(step_fwd, xs=ds, init=init)
+
+        return impl.rv_marginal(x1, bwd_density)
+
+    def _identity_like(x):
+        (n,) = x.mean.shape
+        eye = jnp.eye(n)
+        zero_noise = impl.rv_from_cholesky(jnp.zeros((n,)), jnp.zeros((n, n)))
+        return ckf.AffineCond(eye, zero_noise)
+
+    def step_fwd(x_and_bwd, data):
+        x, bwd_previous = x_and_bwd
         x, logpdf, bwd = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
-        return x, (logpdf, bwd)
-
-    def step_bwd(x, bwd):
-        x = impl.rv_marginal(x, bwd)
-        return x, x
+        bwd_new = impl.cond_combine(outer=bwd_previous, inner=bwd)
+        return (x, bwd_new), None
 
     return smooth
 
