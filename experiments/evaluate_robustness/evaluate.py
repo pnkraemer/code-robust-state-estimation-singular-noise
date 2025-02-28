@@ -10,8 +10,6 @@ jax.config.update("jax_enable_x64", True)
 
 
 def main(num_data=500):
-    results = {}
-
     solve_lu, solve_chol = jnp.linalg.solve, ckf.solve_fun_cholesky()
     conventional_lu = ckf.impl_cov_based(solve_fun=solve_lu)
     conventional_chol = ckf.impl_cov_based(solve_fun=solve_chol)
@@ -21,15 +19,23 @@ def main(num_data=500):
         ("Conventional (LU)", conventional_lu),
         ("Conventional (Chol.)", conventional_chol),
     ]
-    for name, impl_test in impls:
-        print()
-        results[name] = {}
-        for n in range(1, 12, 1):
-            dim = test_util.DimCfg(x=n, y_sing=n // 2, y_nonsing=0)
 
+    results = {"$n$": [], r"$\ell$": []}
+    for name, impl_test in impls:
+        results[name] = []
+
+    for n in range(3, 12, 1):
+        dim = test_util.DimCfg(x=n, y_sing=n // 2, y_nonsing=0)
+        results["$n$"].append(n)
+        results[r"$\ell$"].append(dim.y_sing)
+        print()
+        for name, impl_test in impls:
             # Generate data
             key = jax.random.PRNGKey(seed=1)
-            data_out = jax.random.normal(key, shape=(num_data, dim.y_sing))
+            impl_data = ckf.impl_cholesky_based()
+            (z, x_mid_z, y_mid_x) = test_util.model_hilbert(dim=dim, impl=impl_data)
+            sample_data = ckf.ssm_sample(impl=impl_data, num_data=num_data)
+            data_out = sample_data(key, z, x_mid_z, y_mid_x)
 
             # Reference:
             impl_ref = ckf.impl_cholesky_based()
@@ -47,7 +53,8 @@ def main(num_data=500):
             mae_cov = jnp.abs(x0.cov_dense() - ref.cov_dense()).mean()
             mae = mae_mean + mae_cov
             print(f"n = {n} \tm = {dim.y_sing} \t{name}: \t{jnp.log10(mae):.1f}")
-            results[name][f"$n={n}$, $m={dim.y_sing}$"] = float(jnp.log10(mae))
+            results[name].append(float(jnp.log10(mae)))
+    print(results)
 
     path = pathlib.Path(__file__).parent.resolve()
     with open(f"{path}/data_errors.pkl", "wb") as f:

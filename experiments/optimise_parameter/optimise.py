@@ -91,26 +91,6 @@ def main():
     plt.show()
 
 
-def sample(key, z, x_mid_z, y_mid_x, impl, num_samples=10):
-    key, subkey = jax.random.split(key, num=2)
-    x0 = impl.rv_sample(subkey, z)
-
-    key, subkey = jax.random.split(key, num=2)
-    y0 = impl.cond_evaluate(x0, y_mid_x)
-    y0_sample = impl.rv_sample(subkey, y0)
-    samples = [y0_sample]
-    for _ in range(num_samples - 1):
-        key, subkey = jax.random.split(key, num=2)
-        x = impl.cond_evaluate(x0, x_mid_z)
-        x0 = impl.rv_sample(subkey, x)
-
-        key, subkey = jax.random.split(key, num=2)
-        y0 = impl.cond_evaluate(x0, y_mid_x)
-        y0_sample = impl.rv_sample(subkey, y0)
-        samples.append(y0_sample)
-    return jnp.stack(samples)
-
-
 def marginal_likelihood(impl):
     @jax.jit
     def evaluate(theta, data_out):
