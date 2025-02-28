@@ -13,38 +13,29 @@ def main(seed=1, num_data=50, num_runs=3):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
-    data = {}
-    # todo: run until size 2048 (or at least 1024)
-    for n in [
-        4,
-        8,
-        16,
-        # 32,
-        # 64,
-        # 128,
-        # 256,
-        # 512,
-    ]:  # Loop over the columns of the to-be-assembled table
-        data[f"$n={n}$"] = {}
-        cfgs = [
-            # These are the interesting configs:
-            ("$m=n-1$, $r=0$", test_util.DimCfg(n, n - 1, 0)),
-            (r"$m=\frac{n}{2}$, $r=0$", test_util.DimCfg(n, n // 2, 0)),
-            (r"$m=\frac{n}{2}$, $r=\frac{n}{4}$", test_util.DimCfg(n, n // 4, n // 4)),
-            (r"$m=\frac{n}{4}$, $r=0$", test_util.DimCfg(n, n // 4, 0)),
-            (r"$m=\frac{n}{4}$, $r=\frac{n}{8}$", test_util.DimCfg(n, n // 8, n // 8)),
-            # For context: config where there is nothing to gain
-            (r"$m=\frac{n}{4}$, $r=\frac{n}{4}$", test_util.DimCfg(n, 0, n // 2)),
-        ]
-        for idx, dim in cfgs:
+    ns_all = [4, 8]
+    data = {r"$\ell$": [], "$r$": []}
+    for n in ns_all:
+        data[f"$n={n}$"] = []
+
+    data["Prediction"] = []
+
+    cfgs = setup_configs()
+
+    for ell, r, dim_fun in cfgs:  # loop over rows
+        data[r"$\ell$"].append(ell)
+        data["$r$"].append(r)
+
+        for n in ns_all:
+            dim = dim_fun(n)
             print(dim)
             key, subkey = jax.random.split(key, num=2)
             model_random = test_util.model_random(subkey, dim=dim, impl=impl)
             (z, x_mid_z, y_mid_x), F, _y = model_random
 
-            data_shape = (num_data, dim.y_sing + dim.y_nonsing)
             key, subkey = jax.random.split(key, num=2)
-            data_out = jax.random.normal(subkey, shape=data_shape)
+            sample_data = ckf.ssm_sample(impl=impl, num_data=num_data)
+            data_out = sample_data(key, z, x_mid_z, y_mid_x)
 
             # Assemble all Kalman filters
             unreduced = filter_unreduced(
@@ -61,28 +52,56 @@ def main(seed=1, num_data=50, num_runs=3):
 
                 # Select the summary statistic from the runtimes (eg, fastest run)
                 results[name] = float(jnp.amin(ts))
-                print(f"\t{name}: \t {jnp.amin(ts):.1e}s \t (lower is better)")
+                print(f"\t{name}: \t {jnp.amin(ts):.1e}s")
 
             # Save the ratio of runtimes
             ratio = results["reduced"] / results["unreduced"]
-            data[f"$n={n}$"][idx] = ratio
+            data[f"$n={n}$"].append(ratio)
 
-            print(f"\tRatio: \t\t {ratio:.2f} \t\t (lower is better)")
+            print(f"\tRatio: \t\t {ratio:.2f}")
 
-    # n and the cfgs are still in the namespace, and we use the most recent
-    # values to make predictions. The predictions don't depend on precise
-    # values of n, since we only look at the ratios.
-    data["Prediction"] = {}
-    for idx, dim in cfgs:
+        # n and the cfgs are still in the namespace, and we use the most recent
+        # values to make predictions. The predictions don't depend on precise
+        # values of n, since we only look at the ratios.
         n, m, r = dim.x, dim.y_sing + dim.y_nonsing, dim.y_nonsing
         reduced = flops_reduced(m=m, n=n, r=r)
         unreduced = flops_unreduced(m=m, n=n)
         ratio = reduced / unreduced
-        data["Prediction"][idx] = ratio
+        data["Prediction"].append(ratio)
 
     path = pathlib.Path(__file__).parent.resolve()
     with open(f"{path}/data_runtimes.pkl", "wb") as f:
         pickle.dump(data, f)
+
+
+def setup_configs():
+    def dim_n_minus_1_0(s):
+        return test_util.DimCfg(x=s, y_sing=s - 1, y_nonsing=0)
+
+    def dim_n2_0(s):
+        return test_util.DimCfg(x=s, y_sing=s // 2, y_nonsing=0)
+
+    def dim_n4_n4(s):
+        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=s // 4)
+
+    def dim_n4_0(s):
+        return test_util.DimCfg(x=s, y_sing=s // 4, y_nonsing=0)
+
+    def dim_n8_n8(s):
+        return test_util.DimCfg(x=s, y_sing=s // 8, y_nonsing=s // 8)
+
+    def dim_nogain_n0_n4(s):
+        return test_util.DimCfg(x=s, y_sing=0, y_nonsing=s // 4)
+
+    return [
+        ("$n-1$", "$0$", dim_n_minus_1_0),
+        ("$n/2$", "$0$", dim_n2_0),
+        ("$n/4$", "$n/4$", dim_n4_n4),
+        ("$n/4$", "$0$", dim_n4_0),
+        ("$n/8$", "$n/8$", dim_n8_n8),
+        # For context: config where there is nothing to gain
+        ("$0$", "$n/4$", dim_nogain_n0_n4),
+    ]
 
 
 def benchmark_filter(data_out, alg, num_runs):
