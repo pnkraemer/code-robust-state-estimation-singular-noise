@@ -1,6 +1,3 @@
-import jax.numpy as jnp
-import matplotlib.pyplot as plt
-
 QR_CONST = 2 / 3
 MATVEC_PROP = 0
 

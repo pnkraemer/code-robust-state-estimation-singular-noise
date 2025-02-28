@@ -1,13 +1,13 @@
+import pathlib
+
 import jax
 import jax.numpy as jnp
-import pytest_cases
-
-from ckf import ckf, test_util
+import matplotlib.pyplot as plt
 import optax
 import tqdm
-import matplotlib.pyplot as plt
-import pathlib
-from tueplots import bundles, axes
+from tueplots import axes, bundles
+
+from ckf import ckf
 
 
 def main():

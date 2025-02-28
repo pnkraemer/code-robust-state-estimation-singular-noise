@@ -19,11 +19,11 @@ def main(seed=1, num_data=50, num_runs=3):
         4,
         8,
         16,
-        32,
-        64,
-        128,
-        256,
-        512,
+        # 32,
+        # 64,
+        # 128,
+        # 256,
+        # 512,
     ]:  # Loop over the columns of the to-be-assembled table
         data[f"$n={n}$"] = {}
         cfgs = [
