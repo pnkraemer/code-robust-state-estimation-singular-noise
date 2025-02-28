@@ -13,7 +13,7 @@ def main(seed=1, num_data=50, num_runs=3):
     key = jax.random.PRNGKey(seed)
     impl = ckf.impl_cholesky_based()
 
-    ns_all = [4, 8]
+    ns_all = [32, 64, 128]
     data = {r"$\ell$": [], "$r$": []}
     for n in ns_all:
         data[f"$n={n}$"] = []
@@ -23,26 +23,33 @@ def main(seed=1, num_data=50, num_runs=3):
     cfgs = setup_configs()
 
     for ell, r, dim_fun in cfgs:  # loop over rows
+        print("---------------------")
         data[r"$\ell$"].append(ell)
         data["$r$"].append(r)
+
+        # Predict ratio
+        dim = dim_fun(10)  # value cancels out so doesn't matter
+        n, m, r = dim.x, dim.y_sing + dim.y_nonsing, dim.y_nonsing
+        reduced = flops_reduced(m=m, n=n, r=r)
+        unreduced = flops_unreduced(m=m, n=n)
+        predicted = reduced / unreduced
+        data["Prediction"].append(predicted)
 
         for n in ns_all:
             dim = dim_fun(n)
             print(dim)
             key, subkey = jax.random.split(key, num=2)
-            model_random = test_util.model_random(subkey, dim=dim, impl=impl)
-            (z, x_mid_z, y_mid_x), F, _y = model_random
-
-            key, subkey = jax.random.split(key, num=2)
-            sample_data = ckf.ssm_sample(impl=impl, num_data=num_data)
-            data_out = sample_data(key, z, x_mid_z, y_mid_x)
+            model_random = test_util.model_random(
+                subkey, dim=dim, impl=impl, num_data=num_data
+            )
+            (z, x_mid_z, y_mid_x), F, data_out = model_random
 
             # Assemble all Kalman filters
             unreduced = filter_unreduced(
                 impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x
             )
             reduced = filter_reduced(
-                impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x, F_rank=F.shape[1]
+                impl=impl, z=z, x_mid_z=x_mid_z, y_mid_x=y_mid_x, F_rank=F.shape[-1]
             )
 
             # Benchmark both filters
@@ -52,22 +59,14 @@ def main(seed=1, num_data=50, num_runs=3):
 
                 # Select the summary statistic from the runtimes (eg, fastest run)
                 results[name] = float(jnp.amin(ts))
-                print(f"\t{name}: \t {jnp.amin(ts):.1e}s")
+                print(f"\t{name}: \t {jnp.amin(ts):.1e} sec")
 
             # Save the ratio of runtimes
             ratio = results["reduced"] / results["unreduced"]
             data[f"$n={n}$"].append(ratio)
 
             print(f"\tRatio: \t\t {ratio:.2f}")
-
-        # n and the cfgs are still in the namespace, and we use the most recent
-        # values to make predictions. The predictions don't depend on precise
-        # values of n, since we only look at the ratios.
-        n, m, r = dim.x, dim.y_sing + dim.y_nonsing, dim.y_nonsing
-        reduced = flops_reduced(m=m, n=n, r=r)
-        unreduced = flops_unreduced(m=m, n=n)
-        ratio = reduced / unreduced
-        data["Prediction"].append(ratio)
+            print(f"\tPredicted: \t {predicted:.2f}")
 
     path = pathlib.Path(__file__).parent.resolve()
     with open(f"{path}/data_runtimes.pkl", "wb") as f:
@@ -99,30 +98,28 @@ def setup_configs():
         ("$n/4$", "$n/4$", dim_n4_n4),
         ("$n/4$", "$0$", dim_n4_0),
         ("$n/8$", "$n/8$", dim_n8_n8),
-        # For context: config where there is nothing to gain
-        ("$0$", "$n/4$", dim_nogain_n0_n4),
     ]
 
 
 def benchmark_filter(data_out, alg, num_runs):
-    # Execute once to compile
+    # Compile
     alg = jax.jit(alg)
-    x0, xs, pdf = alg(data_out)
-    x0.mean.block_until_ready()
-    xs.mean.block_until_ready()
-    x0.cholesky.block_until_ready()
-    xs.cholesky.block_until_ready()
+
+    # Execute once to compile
+    x1, pdf = alg(data_out)
+    x1.mean.block_until_ready()
+    x1.cholesky.block_until_ready()
+    pdf.block_until_ready()
 
     # Execute repeatedly, measuring all runtimes
     ts = []
     for _ in range(num_runs):
         t0 = time.perf_counter()
 
-        x0, xs, pdf = alg(data_out)
-        x0.mean.block_until_ready()
-        xs.mean.block_until_ready()
-        x0.cholesky.block_until_ready()
-        xs.cholesky.block_until_ready()
+        x1, pdf = alg(data_out)
+        x1.mean.block_until_ready()
+        x1.cholesky.block_until_ready()
+        pdf.block_until_ready()
 
         t1 = time.perf_counter()
         ts.append(t1 - t0)
@@ -145,15 +142,21 @@ def flops_unreduced(m: int, n: int) -> float:
 
 def filter_unreduced(impl, z, x_mid_z, y_mid_x) -> Callable:
     kalman = ckf.kalman_filter(impl=impl)
+    y_mid_x0 = jax.tree.map(lambda s: s[0], y_mid_x)
+    y_mid_x1 = jax.tree.map(lambda s: s[1:], y_mid_x)
+    del y_mid_x
 
     def apply(data_out):
-        x0_ref, logpdf_ref = kalman.init(data_out[0], x=z, y_mid_x=y_mid_x)
-        _, (xs_ref, logpdfs_ref) = jax.lax.scan(step, xs=data_out[1:], init=x0_ref)
-        return x0_ref, xs_ref, jnp.sum(logpdfs_ref) + logpdf_ref
+        x0_ref, logpdf_ref = kalman.init(data_out[0], x=z, y_mid_x=y_mid_x0)
 
-    def step(x, data):
-        x, logpdf = kalman.step(data, z=x, x_mid_z=x_mid_z, y_mid_x=y_mid_x)
-        return x, (x, logpdf)
+        scan_over = data_out[1:], x_mid_z, y_mid_x1
+        x1_ref, logpdfs_ref = jax.lax.scan(step, xs=scan_over, init=x0_ref)
+        return x1_ref, jnp.sum(logpdfs_ref) + logpdf_ref
+
+    def step(x, scan_over):
+        data, x_mid_z_, y_mid_x_ = scan_over
+        x, logpdf = kalman.step(data, z=x, x_mid_z=x_mid_z_, y_mid_x=y_mid_x_)
+        return x, logpdf
 
     return apply
 
@@ -161,10 +164,14 @@ def filter_unreduced(impl, z, x_mid_z, y_mid_x) -> Callable:
 def filter_reduced(impl, z, x_mid_z, y_mid_x, F_rank) -> Callable:
     kalman = ckf.kalman_filter(impl=impl)
 
+    y_mid_x0 = jax.tree.map(lambda s: s[0], y_mid_x)
+    y_mid_x1 = jax.tree.map(lambda s: s[1:], y_mid_x)
+    del y_mid_x
+
     # Prepare the reduction
     reduction = ckf.model_reduction(F_rank=F_rank, impl=impl)
-    prepared_init = reduction.prepare_init(y_mid_x=y_mid_x, x=z)
-    prepared = reduction.prepare(y_mid_x=y_mid_x, x_mid_z=x_mid_z)
+    prepared_init = reduction.prepare_init(y_mid_x=y_mid_x0, x=z)
+    prepared = jax.vmap(reduction.prepare)(y_mid_x=y_mid_x1, x_mid_z=x_mid_z)
 
     def apply(data_out):
         reduced_init = reduction.reduce_init(data_out[0], prepared=prepared_init)
@@ -174,20 +181,21 @@ def filter_reduced(impl, z, x_mid_z, y_mid_x, F_rank) -> Callable:
         logpdf = pdf1 + pdf2
 
         # Kalman filter iteration
-        _, (xs, logpdfs) = jax.lax.scan(step, xs=data_out[1:], init=(x2, x_mid_x2))
-        return x2, xs, jnp.sum(logpdfs) + logpdf
+        scan_over = (data_out[1:], prepared)
+        (x2, x_mid_x2), logpdfs = jax.lax.scan(step, xs=scan_over, init=(x2, x_mid_x2))
+        return impl.rv_marginal(x2, x_mid_x2), jnp.sum(logpdfs) + logpdf
 
-    def step(x2_and_cond, data):
+    def step(x2_and_cond, data_and_model):
         x2, x_mid_x2 = x2_and_cond
-
+        data_i, prepared_i = data_and_model
         reduced = reduction.reduce(
-            data, hidden=x2, z_mid_hidden=x_mid_x2, prepared=prepared
+            data_i, hidden=x2, z_mid_hidden=x_mid_x2, prepared=prepared_i
         )
         y1, (z, x2_mid_z, y1_mid_x2), (x_mid_x2, pdf2) = reduced
 
         x2, pdf1 = kalman.step(y1, z=z, x_mid_z=x2_mid_z, y_mid_x=y1_mid_x2)
         logpdf = pdf1 + pdf2
-        return (x2, x_mid_x2), (x2, logpdf)
+        return (x2, x_mid_x2), logpdf
 
     return apply
 

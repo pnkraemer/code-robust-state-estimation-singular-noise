@@ -588,3 +588,32 @@ def ssm_sample(impl, *, num_data):
         return jnp.stack(samples)
 
     return sample
+
+
+def ssm_sample_time_varying(impl, *, num_data):
+    def sample(key, z, x_mid_z, y_mid_x):
+        y_mid_x0 = jax.tree.map(lambda s: s[0], y_mid_x)
+        y_mid_x1 = jax.tree.map(lambda s: s[1:], y_mid_x)
+        del y_mid_x
+
+        key, subkey = jax.random.split(key, num=2)
+        x0 = impl.rv_sample(subkey, z)
+
+        key, subkey = jax.random.split(key, num=2)
+        y0 = impl.cond_evaluate(x0, y_mid_x0)
+        y0_sample = impl.rv_sample(subkey, y0)
+        samples = [y0_sample]
+        for i in range(num_data - 1):
+            key, subkey = jax.random.split(key, num=2)
+            x_mid_z_i = jax.tree.map(lambda s: s[i], x_mid_z)
+            x = impl.cond_evaluate(x0, x_mid_z_i)
+            x0 = impl.rv_sample(subkey, x)
+
+            key, subkey = jax.random.split(key, num=2)
+            y_mid_x_i = jax.tree.map(lambda s: s[i], y_mid_x1)
+            y0 = impl.cond_evaluate(x0, y_mid_x_i)
+            y0_sample = impl.rv_sample(subkey, y0)
+            samples.append(y0_sample)
+        return jnp.stack(samples)
+
+    return sample
