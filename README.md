@@ -2,7 +2,7 @@
 
 This repository contains the JAX implementation of the experiments from the paper:
 
-> Krämer, Nicholas, and Filip Tronarp. "Numerically robust Gaussian state estimation with singular observation noise." arXiv preprint arXiv:2503.10279 (2025).
+> Krämer, Nicholas, & Tronarp, Filip (2025). Numerically robust Gaussian state estimation with singular observation noise. arXiv preprint arXiv:2503.10279.
 
 [Here](https://arxiv.org/abs/2503.10279) is a link.
 
