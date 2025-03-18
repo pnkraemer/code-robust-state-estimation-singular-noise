@@ -2,11 +2,20 @@
 
 This repository contains the JAX implementation of the experiments from the paper:
 
-[todo: add arxiv link ]
+> Krämer, Nicholas, and Filip Tronarp. "Numerically robust Gaussian state estimation with singular observation noise." arXiv preprint arXiv:2503.10279 (2025).
+
+[Here](https://arxiv.org/abs/2503.10279) is a link.
 
 Use the following bibtex to cite the paper:
 
-[todo: add bibtex]
+```bibtex 
+@article{kramer2025numerically,
+  title={Numerically robust Gaussian state estimation with singular observation noise},
+  author={Kr{\"a}mer, Nicholas and Tronarp, Filip},
+  journal={arXiv preprint arXiv:2503.10279},
+  year={2025}
+}
+```
 
 ## Installation
 Ensure you have JAX installed correctly for your hardware (CPU/GPU/TPU). 
